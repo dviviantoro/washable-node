@@ -1,0 +1,22 @@
+name: release
+# Push a tag like v1.2.0 -> builds the firmware and publishes firmware.bin + manifest.json as release assets.
+# Kiosks poll https://github.com/<owner>/<repo>/releases/latest/download/manifest.json
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install platformio
+      - name: Build and write manifest
+        run: python tools/release.py "${GITHUB_REF_NAME#v}"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/firmware.bin dist/manifest.json --generate-notes
