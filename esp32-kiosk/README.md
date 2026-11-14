@@ -8,6 +8,26 @@ Owners configure the kiosk from the touch screen or from a PC browser, and the f
 
 The UI is in Indonesian and follows the "Washable" design (navy / teal / blue / orange / mint, Fredoka + Nunito fonts), in portrait.
 
+## The board
+
+[CYD ESP32-3248S035](https://www.espboards.dev/esp32/cyd-esp32-3248s035/) ("Cheap Yellow Display", Sunton): ESP32-WROOM-32 (4 MB flash), 3.5" 320x480 ST7796 display, GT911 capacitive touch, on-board RGB LED, micro-SD, speaker, Micro-USB + USB-C.
+Full pinout and datasheet: [espboards.dev](https://www.espboards.dev/esp32/cyd-esp32-3248s035/).
+
+![CYD ESP32-3248S035 connectors (image: espboards.dev)](https://cdn.espboards.net/boards/cyd-esp32-3248s035/pinout-1356.png)
+
+The kiosk uses the **P1 serial connector** (4P 1.25 mm: VIN, IO1/TX, IO3/RX, GND) to talk to the relay controller, see [Wiring](#wiring-to-the-relay-controller).
+
+## Screenshots
+
+Every page of the kiosk (320x480 portrait). They are rendered on a PC from the **real UI code** of `src/main.cpp` with LVGL (`tools/sim/screenshots.sh`), with sample data, so they match what the board draws; regenerate them after any UI change.
+
+<table>
+<tr><td align="center"><img src="../docs/img/screens/idle.png" width="150"><br><sub>Idle</sub></td><td align="center"><img src="../docs/img/screens/idle-running.png" width="150"><br><sub>Idle, machines running</sub></td><td align="center"><img src="../docs/img/screens/service.png" width="150"><br><sub>Choose service</sub></td><td align="center"><img src="../docs/img/screens/service-busy.png" width="150"><br><sub>Service, machines in use</sub></td><td align="center"><img src="../docs/img/screens/member-ask.png" width="150"><br><sub>Member?</sub></td></tr>
+<tr><td align="center"><img src="../docs/img/screens/member-phone.png" width="150"><br><sub>Phone number</sub></td><td align="center"><img src="../docs/img/screens/member-check.png" width="150"><br><sub>Checking member</sub></td><td align="center"><img src="../docs/img/screens/member-otp.png" width="150"><br><sub>WhatsApp code</sub></td><td align="center"><img src="../docs/img/screens/member-home.png" width="150"><br><sub>Member home</sub></td><td align="center"><img src="../docs/img/screens/cycle-wash.png" width="150"><br><sub>Wash programs</sub></td></tr>
+<tr><td align="center"><img src="../docs/img/screens/cycle-dry.png" width="150"><br><sub>Dry programs</sub></td><td align="center"><img src="../docs/img/screens/pay.png" width="150"><br><sub>QRIS payment</sub></td><td align="center"><img src="../docs/img/screens/success.png" width="150"><br><sub>Payment success</sub></td><td align="center"><img src="../docs/img/screens/run-wash.png" width="150"><br><sub>Washing</sub></td><td align="center"><img src="../docs/img/screens/run-dry.png" width="150"><br><sub>Drying</sub></td></tr>
+<tr><td align="center"><img src="../docs/img/screens/done.png" width="150"><br><sub>Cycle done</sub></td><td align="center"><img src="../docs/img/screens/pin.png" width="150"><br><sub>Admin PIN</sub></td><td align="center"><img src="../docs/img/screens/settings.png" width="150"><br><sub>Settings</sub></td><td align="center"><img src="../docs/img/screens/wifi.png" width="150"><br><sub>Wi-Fi</sub></td><td align="center"><img src="../docs/img/screens/ota.png" width="150"><br><sub>Firmware update</sub></td></tr>
+</table>
+
 ## Features
 
 - **Customer flow**: Idle -> choose service (Cuci / Keringkan) -> member? -> choose program -> pay with QRIS -> payment success -> washing / drying -> cycle done.
@@ -22,15 +42,54 @@ The UI is in Indonesian and follows the "Washable" design (navy / teal / blue / 
 - **Relay controller link** to an STM32 over serial JSON (8 relays: 4 wash, 4 dry), with an installer **Tes relay** page. See [Relay controller](#relay-controller-stm32).
 - **Settings survive updates**: stored in NVS plus a checksummed mirror in flash.
 
-## Screen flow
+## Process flow
 
+```mermaid
+flowchart TD
+  I([Idle]) -- touch --> S[Choose service<br/>Cuci / Keringkan]
+  S -- machine already running --> R
+  S --> M{Member?}
+  M -- not yet --> A[Ask member] -- no --> C
+  A -- yes --> P1[Phone] --> P2[Checking] --> P3[WhatsApp code] --> MH[Member home<br/>points, coupons] --> C
+  M -- yes --> C[Choose program<br/>price, temperature, minutes]
+  C --> Q[Pay with QRIS<br/>5 min timer]
+  Q -- timeout --> I
+  Q -- paid --> OK[Payment success]
+  OK -- Mulai sekarang --> J[[Start cycle job]]
+  J --> R[Progress screen<br/>Mencuci / Membilas / Memeras]
+  R -- timer ends --> D[Cycle done]
+  D -- Lanjut keringkan --> C
+  D -- Selesai --> I
+  I -. gear .-> PIN[Admin PIN] --> ST[Settings<br/>Wi-Fi, PIN, brightness, info, relay test]
 ```
-Idle ──tap──> Service ──> (not a member?) Ask member ──no──> Cycle ──> Pay (QRIS) ──> Success ──> Washing/Drying ──> Done
-  |                              | yes                          ^
-  |                              v                              |
-  |                    Phone -> Checking -> Code -> Member home ┘
-  └─ gear ─> PIN ─> Settings ─> Wi-Fi / PIN edit / info (sensitive data needs the PIN again)
+
+### Wash and dry run in parallel with the kiosk
+
+A paid cycle is a **background job** (one for the wash machine, one for the dryer), independent of whatever page is on screen:
+
+```mermaid
+flowchart LR
+  subgraph Engine[Job engine - 100 ms tick, runs before any UI logic]
+    direction TB
+    F([free]) -- payment confirmed --> RUN([running<br/>relays ON])
+    RUN -- duration elapsed --> DN([finished<br/>relays OFF, LED flash])
+    DN -- clothes collected or 30 min --> F
+  end
+  subgraph UI[Kiosk UI]
+    direction TB
+    U1[Idle: pill per machine<br/>'Cuci 12:30' / 'Kering selesai'] 
+    U2[Service: badge on a busy card]
+    U3[Progress screen = a view of the job]
+  end
+  RUN -.-> U1
+  RUN -.-> U2
+  U1 & U2 -- tap --> U3
+  RUN -. blocks .-> OTA[Firmware update]
 ```
+
+- While the wash runs, a customer can pay for and start drying, use membership, or the owner can open settings. Leaving the progress screen never stops a cycle.
+- Tapping a busy machine's card (or its pill on the first page) opens its progress; a finished one opens "Cucian sudah bersih".
+- The LED stays yellow while any job runs. OTA installs are refused while a job runs.
 
 Pages switch with a backlight fade (no full-screen redraw), and each screen is built on entry and deleted on exit so only the visible page animates.
 
@@ -123,14 +182,49 @@ pio device monitor             # serial log, 115200 baud
 
 ## Relay controller (STM32)
 
-The ESP32 sends JSON lines (`{...}*CRC16`) over UART0 (GPIO1/GPIO3) to an **STM32G030F6P6** (WeAct core board, USART2 on PA2/PA3) that switches 8 relays:
+The ESP32 sends JSON lines (`{...}*CRC16`) over UART0 (GPIO1/GPIO3) to an **STM32G030F6P6** ([WeAct core board](../stm32-relay/README.md), USART2 on PA2/PA3) that switches 8 relays:
 channels 1-4 for the wash machine, 5-8 for the dryer. The ESP32 decides what to switch and when; the STM32 enforces safety (all off at boot, every `on` has a time limit,
 all off if the heartbeat stops for 3 s). Full protocol: [docs/relay-protocol.md](../docs/relay-protocol.md).
 
-- **Wiring**: ESP32 GPIO1 -> PA3, ESP32 GPIO3 <- PA2, common GND, 3.3 V logic. GPIO1/3 are the USB console too: log text on the wire is ignored by the controller, and while uploading ESP32 firmware over USB disconnect PA2 (or use a 1 k series resistor).
+### Wiring to the relay controller
+
+![System wiring](../docs/img/wiring.svg)
+
+| ESP32-3248S035 (P1 connector) | STM32 (WeAct G030) | Note |
+|---|---|---|
+| IO1 / TX0 | PA3 (USART2 RX) | 3.3 V, 115200 8N1 |
+| IO3 / RX0 | PA2 (USART2 TX) | 3.3 V |
+| GND | GND | common ground, required |
+| VIN (5 V) | 5V | one shared 5 V supply |
+
+GPIO1/3 are the USB console too: log text on the wire is ignored by the controller, and while uploading ESP32 firmware over USB disconnect the TX wire (or use a 1 k series resistor).
+The STM32 pin-to-relay mapping is in the [STM32 README](../stm32-relay/README.md).
+
+### Communication
+
+```mermaid
+sequenceDiagram
+  participant K as ESP32 kiosk
+  participant S as STM32 controller
+  Note over S: boot: all relays OFF, silent until it hears a frame
+  K->>S: cmd hello (fw, machine id)
+  S-->>K: ack (fw, relays=8)
+  loop every 1 s
+    K->>S: hb (seq)
+    S-->>K: hb (seq, relay mask, uptime)
+  end
+  K->>S: cmd relay on=[1,2] off=[3,4] ttl=10
+  S-->>K: ack (new relay mask)
+  Note over S: ttl runs out: relay switches OFF by itself, evt relay why=ttl
+  K--xS: link lost (no frame for 3 s)
+  Note over S: failsafe: ALL relays OFF, evt failsafe sent when the link returns
+```
+
+Frame format: `{json}*CRC16\n` (CRC-16/CCITT-FALSE), for example `{"v":1,"t":"hb","seq":42}*9ADA`. Details and error codes: [docs/relay-protocol.md](../docs/relay-protocol.md).
+
 - **Status**: Settings -> *Tes relay* (6th row) shows the link state and lets the installer switch each of the 8 channels (20 s safety timer; everything off when you leave the page). The Info card shows "Kontroler relay: terhubung (fw ...)".
 - **Phase sequences are not connected yet**: wash/dry cycles do not drive relays yet (relay roles and the on/off table per phase are still to be decided); only the link, the test page and the commands exist.
-- **STM32 firmware**: [`stm32-relay/`](../stm32-relay/) (PlatformIO, STM32duino, board definition for the WeAct G030F6P6). Relay outputs `PA0, PA1, PA4, PA5, PA6, PA7, PB0, PB1` = channels 1-8 (check against your board before connecting loads), active-high by default (`RELAY_ACTIVE_HIGH`). Build `cd stm32-relay && pio run`, flash with an ST-Link `pio run -t upload`.
+- **STM32 firmware**: [`stm32-relay/`](../stm32-relay/) (PlatformIO, STM32duino, board definition for the WeAct G030F6P6). Relay outputs `PA0, PA1, PA5, PA6, PA7, PA8, PA11, PA12` = channels 1-8 (check against your board before connecting loads), active-high by default (`RELAY_ACTIVE_HIGH`). Build `cd stm32-relay && pio run`, flash with an ST-Link `pio run -t upload`.
 - **Tests without hardware**: `tests/run_host_tests.sh` from the repo root (controller logic, and this firmware's link code against the controller core), and `tools/stm32_sim.py` (pretends to be the STM32 over the ESP32 USB cable).
 
 ## Serial debug keys (115200 baud)

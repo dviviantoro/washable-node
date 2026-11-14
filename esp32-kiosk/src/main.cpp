@@ -2233,7 +2233,7 @@ static void webUrlText(char *out, size_t n) {
     char host[32];
     webHost(host, sizeof host);
     snprintf(out, n, "http://%s.local\nhttp://%s\nLogin: admin + PIN admin%s", host, WiFi.localIP().toString().c_str(),
-             strcmp(cfg.pin, "123456") ? "" : "\nPIN masih 123456 - segera ganti!");
+             strcmp(cfg.pin, "123456") ? "" : "\nPIN bawaan, segera ganti!");
   } else {
     snprintf(out, n, "Wi-Fi belum terhubung.\nHubungkan Wi-Fi dulu agar PC bisa\nmembuka form pengaturan.");
   }

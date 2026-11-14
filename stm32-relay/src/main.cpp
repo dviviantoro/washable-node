@@ -16,7 +16,7 @@
 #define LED_PIN             PNUM_NOT_DEFINED       // optional status LED pin (blinks while the link is alive)
 
 // Relay outputs, channel 1..8. Check them against the pinout of your board before connecting loads.
-static const uint32_t RELAY_PIN[CTRL_RELAYS] = { PA0, PA1, PA4, PA5, PA6, PA7, PB0, PB1 };
+static const uint32_t RELAY_PIN[CTRL_RELAYS] = { PA0, PA1, PA5, PA6, PA7, PA8, PA11, PA12 };
 
 static void txFrame(const char *f, size_t n) { Serial.write((const uint8_t *)f, n); }
 static void relayWrite(uint8_t ch, bool on) {

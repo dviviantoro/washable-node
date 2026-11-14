@@ -9,7 +9,9 @@ stm32-relay/   STM32G030F6P6 relay controller     (PlatformIO, STM32duino)      
 shared/        code used by both firmwares        (relay_proto: CRC, framing, JSON field helpers)
 tests/         host tests that span both projects (run_host_tests.sh, integration/)
 docs/          relay-protocol.md                  the ESP32 <-> STM32 serial JSON protocol
-tools/         release.py (kiosk release builder), stm32_sim.py (STM32 simulator)
+docs/img/      screenshots (docs/img/screens) and wiring / pinout drawings
+tools/         release.py (kiosk release builder), stm32_sim.py (STM32 simulator),
+               sim/ (renders the kiosk screens on a PC), diagrams/ (generates the SVG drawings)
 .github/       CI (build + tests) and the release workflows
 washable.code-workspace   VS Code multi-root workspace (one PlatformIO project per folder)
 ```
@@ -20,6 +22,12 @@ washable.code-workspace   VS Code multi-root workspace (one PlatformIO project p
  │  kiosk (esp32-kiosk)│ GPIO3 RX <─────────────────── PA2   │  relay controller        │   1-4 wash, 5-8 dry
  └────────────────────┘                                     └──────────────────────────┘
 ```
+
+<p align="center">
+<img src="docs/img/screens/idle.png" width="150"> <img src="docs/img/screens/service.png" width="150"> <img src="docs/img/screens/pay.png" width="150"> <img src="docs/img/screens/run-wash.png" width="150"> <img src="docs/img/screens/done.png" width="150">
+</p>
+
+All pages, wiring and flows: [esp32-kiosk/README.md](esp32-kiosk/README.md) (kiosk, screenshots, serial link) and [stm32-relay/README.md](stm32-relay/README.md) (board pinout, relay wiring, controller flow).
 
 ## Quick start
 
@@ -35,6 +43,8 @@ pio run -d stm32-relay -t upload        # flash with an ST-Link
 # tests (no hardware needed)
 ./tests/run_host_tests.sh
 ```
+
+Regenerate the screenshots after a UI change with `tools/sim/screenshots.sh` (needs one `pio run -d esp32-kiosk` first for the LVGL sources) and the drawings with `python3 tools/diagrams/gen_diagrams.py`.
 
 Open `washable.code-workspace` in VS Code so the PlatformIO extension sees each project (a PlatformIO project is a folder with a `platformio.ini`).
 
