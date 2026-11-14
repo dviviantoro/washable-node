@@ -1,0 +1,24 @@
+name: stm32-release
+# Push a tag like stm32-v0.2.0 -> builds stm32-relay and attaches stm32-relay-0.2.0.bin to a GitHub release.
+# --latest=false: this must never become the repo's "latest" release (the kiosks' OTA URL resolves to the latest kiosk release).
+on:
+  push:
+    tags: ["stm32-v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install platformio
+      - run: pio run -d stm32-relay
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${GITHUB_REF_NAME#stm32-v}"
+          cp stm32-relay/.pio/build/weact_g030f6p6/firmware.bin "stm32-relay-${VER}.bin"
+          gh release create "$GITHUB_REF_NAME" "stm32-relay-${VER}.bin" --generate-notes --latest=false

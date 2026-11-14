@@ -42,3 +42,4 @@ void otaAck();                                    // error acknowledged -> back 
 void otaForceCheck();                             // bench/debug: check now
 bool otaInWindow();                               // time synced and inside the install window
 void otaStatusText(char *out, size_t n);
+bool otaLastUpdate(uint32_t *epoch, char *ver, size_t n);   // last successful OTA install (UTC epoch + version)

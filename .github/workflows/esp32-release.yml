@@ -1,6 +1,7 @@
-name: release
-# Push a tag like v1.2.0 -> builds the firmware and publishes firmware.bin + manifest.json as release assets.
+name: esp32-release
+# Push a tag like v1.2.0 -> builds esp32-kiosk and publishes firmware.bin + manifest.json as release assets.
 # Kiosks poll https://github.com/<owner>/<repo>/releases/latest/download/manifest.json
+# Only v* tags are kiosk releases. Other firmware (stm32-v*) is published with --latest=false so it never becomes "latest".
 on:
   push:
     tags: ["v*"]

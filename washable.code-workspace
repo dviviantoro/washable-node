@@ -1,0 +1,12 @@
+{
+  "folders": [
+    { "name": "esp32-kiosk", "path": "esp32-kiosk" },
+    { "name": "stm32-relay", "path": "stm32-relay" },
+    { "name": "shared / docs / tools / tests", "path": "." }
+  ],
+  "settings": {
+    "files.exclude": { "**/.pio": true, "**/.DS_Store": true },
+    "search.exclude": { "**/.pio": true, "**/fonts": true }
+  },
+  "extensions": { "recommendations": ["platformio.platformio-ide"] }
+}

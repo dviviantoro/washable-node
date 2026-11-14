@@ -20,6 +20,7 @@
 #include <esp_ota_ops.h>
 #include "version.h"
 #include "ota.h"
+#include "relay_link.h"
 #include <lvgl.h>
 #include <TFT_eSPI.h>
 
@@ -93,7 +94,7 @@ static const Opt DRY_OPTS[3] = {
   { "Kering total", "60 menit", "Rp 18.000", 18000, 75, 60, 92 },
 };
 
-enum Scr { SC_IDLE, SC_SERVICE, SC_CYCLE, SC_PAY, SC_SUCCESS, SC_RUN, SC_DONE, SC_PIN, SC_SETTINGS, SC_WIFI, SC_EDIT, SC_OTA, SC_COUNT };
+enum Scr { SC_IDLE, SC_SERVICE, SC_CYCLE, SC_PAY, SC_SUCCESS, SC_RUN, SC_DONE, SC_PIN, SC_SETTINGS, SC_WIFI, SC_EDIT, SC_OTA, SC_MASK, SC_PHONE, SC_CHECK, SC_OTP, SC_MHOME, SC_RTEST, SC_COUNT };
 
 static int svc = 0;          // 0 = wash, 1 = dry
 static int pick = 1;         // selected option
@@ -103,6 +104,12 @@ static bool busy = false;     // a screen swap is in progress
 
 static const Opt *curOpt() { return (svc ? DRY_OPTS : WASH_OPTS) + pick; }
 static lv_color_t accentCol() { return svc ? C_ORANGE : C_BLUE; }
+
+// ---- background jobs: one wash machine + one dry machine run independently of whatever screen is showing
+enum JobState : uint8_t { JS_FREE, JS_RUN, JS_DONE };      // JS_DONE = finished, clothes not collected yet
+struct Job { JobState st; uint8_t opt; uint32_t startMs, durMs, doneMs; };
+static Job jobs[2];                                         // [0] wash, [1] dry
+static bool anyJobRunning() { return jobs[0].st == JS_RUN || jobs[1].st == JS_RUN; }
 
 // ============================== SETTINGS (persisted in NVS) ==============================
 struct Cfg {
@@ -126,7 +133,7 @@ static const CfgStr CFG_STR[] = {
   { "pass",    cfg.pass,      sizeof cfg.pass,      ""     },
   { "apiurl",  cfg.apiUrl,    sizeof cfg.apiUrl,    ""     },
   { "apikey",  cfg.apiKey,    sizeof cfg.apiKey,    ""     },
-  { "pin",     cfg.pin,       sizeof cfg.pin,       "1234" },
+  { "pin",     cfg.pin,       sizeof cfg.pin,       "123456" },
   { "otaurl",  cfg.otaUrl,    sizeof cfg.otaUrl,    ""     },
 };
 
@@ -220,7 +227,7 @@ static void loadCfg() {
     prefs.end();
   }
   if (!have) restored = backupRestore();            // NVS empty: try the flash mirror
-  if (strlen(cfg.pin) < 4 || strlen(cfg.pin) > 6) strlcpy(cfg.pin, "1234", sizeof cfg.pin);
+  if (strlen(cfg.pin) != 6) strlcpy(cfg.pin, "123456", sizeof cfg.pin);     // PIN is exactly 6 digits (older 4-digit PINs reset to the default)
   if (!cfg.machineId[0]) strlcpy(cfg.machineId, "03", sizeof cfg.machineId);
   if (restored) { saveCfg(); Serial.println("CFG: restored from flash backup"); }
   else if (have && spiffsOk && !SPIFFS.exists("/cfg.bak")) backupWrite();   // first boot after the OTA-capable update
@@ -237,11 +244,104 @@ static bool cfgFlushVerify() {
   return ok;
 }
 static uint32_t secPerMin() { return cfg.demo ? 1 : 60; }
+static uint32_t wifiAttemptMs = 0;
 static void wifiConnect() {
   if (!cfg.ssid[0]) return;
+  wifiAttemptMs = millis();
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   WiFi.begin(cfg.ssid, cfg.pass);
+}
+
+// ============================== RGB STATUS LED ==============================
+// Colour code (priority top to bottom):
+//   blue pulse ........ firmware update downloading
+//   red x3 / x2 flash . error (payment timeout, wrong PIN / member code, update failed)
+//   green x3 / x5 ..... payment received / cycle finished
+//   yellow solid ...... wash / dry running, Wi-Fi OK      yellow<->red alternate: running but Wi-Fi lost
+//   yellow slow blink . waiting for payment               yellow fast blink: checking member / entering code
+//   purple solid ...... admin pages (PIN, settings, Wi-Fi, editor)
+//   blue blink ........ Wi-Fi connecting (first 20 s)
+//   green solid ....... Wi-Fi connected and ready         red solid: Wi-Fi lost and nothing running
+#define LED_R_PIN       4
+#define LED_G_PIN       16
+#define LED_B_PIN       17
+#define LED_ACTIVE_LOW  1        // the on-board RGB LED is common-anode
+#define LED_LEVEL       90       // max brightness 0..255 (full brightness is very bright)
+#define LED_SELFTEST    1        // red -> green -> blue at boot
+static const uint8_t LED_CH[3] = { 1, 2, 3 };
+
+struct Rgb { uint8_t r, g, b; };
+static const Rgb LC_OFF = { 0, 0, 0 }, LC_RED = { 255, 0, 0 }, LC_GREEN = { 0, 255, 0 }, LC_YELLOW = { 255, 110, 0 },
+                 LC_BLUE = { 0, 70, 255 }, LC_PURPLE = { 170, 0, 255 };
+enum LedKind : uint8_t { LK_SOLID, LK_BLINK, LK_PULSE, LK_ALT };
+struct LedPat { LedKind kind; Rgb a, b; uint16_t period; const char *name; };
+
+static uint32_t ledFlashUntil = 0;
+static Rgb ledFlashCol = LC_OFF;
+
+static void ledWrite(Rgb c) {
+  static int last[3] = { -1, -1, -1 };
+  const uint8_t v[3] = { c.r, c.g, c.b };
+  for (int i = 0; i < 3; i++) {
+    int d = (int)v[i] * LED_LEVEL / 255;
+    if (LED_ACTIVE_LOW) d = 255 - d;
+    if (d != last[i]) { last[i] = d; ledcWrite(LED_CH[i], d); }
+  }
+}
+static void ledFlash(Rgb c, int times) { ledFlashCol = c; ledFlashUntil = millis() + (uint32_t)times * 240; }
+
+static LedPat ledDecide(uint32_t now) {
+  bool wifi = WiFi.status() == WL_CONNECTED;
+  if (ota.state == OTA_DOWNLOADING || ota.state == OTA_VERIFYING || curScr == SC_OTA) return { LK_PULSE, LC_BLUE, LC_OFF, 1600, "update" };
+  switch (curScr) {
+    case SC_PAY:
+    case SC_SUCCESS:
+      return wifi ? LedPat{ LK_BLINK, LC_YELLOW, LC_OFF, 1200, "payment" } : LedPat{ LK_ALT, LC_YELLOW, LC_RED, 1200, "payment-offline" };
+    case SC_CHECK:
+    case SC_OTP:
+      return { LK_BLINK, LC_YELLOW, LC_OFF, 500, "member-check" };
+    case SC_PIN:
+    case SC_SETTINGS:
+    case SC_WIFI:
+    case SC_EDIT:
+    case SC_RTEST:
+      return { LK_SOLID, LC_PURPLE, LC_OFF, 0, "admin" };
+    default:
+      break;
+  }
+  if (anyJobRunning())
+    return wifi ? LedPat{ LK_SOLID, LC_YELLOW, LC_OFF, 0, "running" } : LedPat{ LK_ALT, LC_YELLOW, LC_RED, 1200, "running-offline" };
+  if (!wifi && cfg.ssid[0] && now - wifiAttemptMs < 20000) return { LK_BLINK, LC_BLUE, LC_OFF, 900, "wifi-connecting" };
+  return wifi ? LedPat{ LK_SOLID, LC_GREEN, LC_OFF, 0, "ready" } : LedPat{ LK_SOLID, LC_RED, LC_OFF, 0, "wifi-lost" };
+}
+
+static void ledTick(uint32_t now) {
+  if (now < ledFlashUntil) { ledWrite(((ledFlashUntil - now) / 120) % 2 ? ledFlashCol : LC_OFF); return; }
+  LedPat p = ledDecide(now);
+  static const char *lastName = NULL;
+  if (p.name != lastName && strcmp(p.name, lastName ? lastName : "")) { lastName = p.name; Serial.printf("LED: %s\n", p.name); }
+  switch (p.kind) {
+    case LK_SOLID: ledWrite(p.a); break;
+    case LK_BLINK: ledWrite((now % p.period) < p.period / 2 ? p.a : LC_OFF); break;
+    case LK_ALT:   ledWrite((now % p.period) < p.period / 2 ? p.a : p.b); break;
+    case LK_PULSE: {
+      uint32_t ph = now % p.period, half = p.period / 2;
+      uint32_t lv = ph < half ? ph * 255 / half : (p.period - ph) * 255 / half;
+      ledWrite({ (uint8_t)(p.a.r * lv / 255), (uint8_t)(p.a.g * lv / 255), (uint8_t)(p.a.b * lv / 255) });
+      break;
+    }
+  }
+}
+static void ledInit() {
+  const uint8_t pins[3] = { LED_R_PIN, LED_G_PIN, LED_B_PIN };
+  for (int i = 0; i < 3; i++) { ledcSetup(LED_CH[i], 5000, 8); ledcAttachPin(pins[i], LED_CH[i]); }
+  ledWrite(LC_OFF);
+#if LED_SELFTEST
+  const Rgb seq[3] = { LC_RED, LC_GREEN, LC_BLUE };
+  for (int i = 0; i < 3; i++) { ledWrite(seq[i]); delay(220); }
+  ledWrite(LC_OFF);
+#endif
 }
 
 // ============================== HARDWARE ==============================
@@ -261,6 +361,36 @@ static void setRelays(bool wash, bool dry) {
   digitalWrite(RELAY_DRY_PIN, dry ? RELAY_ON : RELAY_OFF);
 #endif
   (void)wash; (void)dry;
+}
+
+static const Opt *jobOpt(int k) { return (k ? DRY_OPTS : WASH_OPTS) + jobs[k].opt; }
+static uint32_t jobElapsed(int k, uint32_t now) { uint32_t e = now - jobs[k].startMs; return e > jobs[k].durMs ? jobs[k].durMs : e; }
+static int jobRemainSec(int k, uint32_t now) { return (jobs[k].durMs - jobElapsed(k, now) + 999) / 1000; }
+static void jobsApplyRelays() { setRelays(jobs[0].st == JS_RUN, jobs[1].st == JS_RUN); }
+
+static void jobStart(int k, int opt) {
+  if (jobs[k].st == JS_RUN) return;                        // already running: never restart a paid cycle
+  jobs[k].opt = (uint8_t)opt;
+  jobs[k].startMs = millis();
+  jobs[k].durMs = (k ? DRY_OPTS : WASH_OPTS)[opt].minutes * secPerMin() * 1000UL;
+  jobs[k].st = JS_RUN;
+  jobsApplyRelays();
+  Serial.printf("JOB %s start: %s, %lu s\n", k ? "dry" : "wash", jobOpt(k)->name, (unsigned long)(jobs[k].durMs / 1000));
+}
+
+// Runs from the 100 ms app timer, before any screen logic, so cycle timing never depends on the UI.
+static void jobsTick(uint32_t now) {
+  for (int k = 0; k < 2; k++) {
+    if (jobs[k].st == JS_RUN && now - jobs[k].startMs >= jobs[k].durMs) {
+      jobs[k].st = JS_DONE;
+      jobs[k].doneMs = now;
+      jobsApplyRelays();
+      ledFlash(LC_GREEN, 5);
+      Serial.printf("JOB %s finished\n", k ? "dry" : "wash");
+    } else if (jobs[k].st == JS_DONE && now - jobs[k].doneMs > 1800000UL) {
+      jobs[k].st = JS_FREE;                                 // nobody collected: free the slot after 30 min
+    }
+  }
 }
 
 static void dispFlush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
@@ -665,11 +795,538 @@ static lv_obj_t *mkHeader(lv_obj_t *scr, Scr backTo, const char *right) {
   return NULL;
 }
 
+// ============================== MEMBERSHIP ==============================
+// Demo data: any number is "found", the code is always MEMBER_DEMO_OTP, points/coupons are sample values kept in RAM.
+// Replace memberLookup/verify with calls to the backend (cfg.apiUrl + cfg.apiKey) when it exists.
+#define MEMBER_NAME      "Budi"
+#define MEMBER_FULL      "Budi S."
+#define MEMBER_TIER      "Member Silver"
+#define MEMBER_DEMO_OTP  "123456"
+#define OTP_RESEND_SEC   60
+
+static bool memberActive = false;
+static char mDigits[12] = "";
+static char mOtp[8] = "";
+static int mPoints = 1250, mTab = 0;
+static bool mUsed[3], mClaimed[3];
+static Scr memberBack = SC_IDLE;           // where "back" on the phone screen leads
+
+static void memberReset() {
+  memberActive = false; mDigits[0] = 0; mOtp[0] = 0; mPoints = 1250; mTab = 0;
+  for (int i = 0; i < 3; i++) mUsed[i] = mClaimed[i] = false;
+}
+// mode 0: "812 3456 7890"   1: "+62 812-3456-7890"   2: "+62 812-••••-7890"
+static void fmtPhone(char *out, size_t n, int mode) {
+  String d = mDigits;
+  String g1 = d.substring(0, 3), g2 = d.length() > 3 ? d.substring(3, 7) : "", g3 = d.length() > 7 ? d.substring(7, 11) : "";
+  if (mode == 0) {
+    String s = g1; if (g2.length()) s += " " + g2; if (g3.length()) s += " " + g3;
+    snprintf(out, n, "%s", s.c_str());
+  } else if (mode == 1) {
+    snprintf(out, n, "+62 %s-%s-%s", g1.c_str(), g2.c_str(), g3.c_str());
+  } else {
+    snprintf(out, n, "+62 %s-••••-%s", g1.c_str(), d.length() >= 4 ? d.substring(d.length() - 4).c_str() : "");
+  }
+}
+
+// 3x4 numeric keypad (0-9, 10 = clear, 11 = backspace)
+static void mkKeypad(lv_obj_t *p, int x, int y, int kw, int kh, int gap, lv_event_cb_t cb, int vgap = 6) {
+  for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 3; c++) {
+      int code = (r < 3) ? r * 3 + c + 1 : (c == 0 ? 10 : (c == 1 ? 0 : 11));
+      lv_obj_t *b = mkClickBox(p, x + c * (kw + gap), y + r * (kh + vgap), kw, kh, C_NAVY2, 14, cb, (void *)(intptr_t)code);
+      lv_obj_set_style_bg_color(b, C_NAVY3, LV_STATE_PRESSED);
+      lv_obj_t *l;
+      if (code == 10) l = mkLbl(b, "C", &f_fredoka_20, C_LIGHT);
+      else if (code == 11) l = mkLbl(b, LV_SYMBOL_BACKSPACE, &lv_font_montserrat_20, C_LIGHT);
+      else { char t[2] = { (char)('0' + code), 0 }; l = mkLbl(b, t, &f_fredoka_28, C_WHITE); }
+      lv_obj_center(l);
+    }
+}
+
+static void coinCb(void *var, int32_t w) {          // coin "flips" by squeezing its face
+  lv_obj_t *o = (lv_obj_t *)var;
+  lv_obj_set_width(o, w);
+  lv_obj_set_x(o, lv_obj_get_user_data(o) ? (int)(intptr_t)lv_obj_get_user_data(o) - w / 2 : 0);
+}
+static lv_obj_t *mkCoin(lv_obj_t *p, int x, int y, int size) {
+  lv_obj_t *c = mkBox(p, x, y, size, size, C_ORANGE, LV_RADIUS_CIRCLE);
+  int f = size * 70 / 100;
+  lv_obj_t *face = mkBox(c, (size - f) / 2, (size - f) / 2, f, f, lv_color_hex(0xFFC98A), LV_RADIUS_CIRCLE);
+  lv_obj_set_style_border_width(face, 2, 0);
+  lv_obj_set_style_border_color(face, C_NAVY, 0);
+  lv_obj_set_user_data(face, (void *)(intptr_t)(size / 2));
+  lv_obj_t *l = mkLbl(face, "W", &f_fredoka_20, C_NAVY);
+  lv_obj_center(l);
+  animStart(face, coinCb, f, 4, 1500, 0, true, 1500);
+  return c;
+}
+
+// ---------------------------------------- Ask: "Kamu member Washable?"
+static void evtAskYes(lv_event_t *) { memberBack = SC_MASK; showScreen(SC_PHONE); }
+static void evtAskNo(lv_event_t *)  { showScreen(SC_CYCLE); }
+static void riseCb(void *var, int32_t v) {
+  lv_obj_t *o = (lv_obj_t *)var;
+  lv_obj_set_y(o, 40 - v * 34 / 255);
+  lv_obj_set_style_bg_opa(o, (lv_opa_t)(v < 40 ? v * 6 : 255 - v), 0);
+}
+
+static lv_obj_t *buildMask() {
+  lv_obj_t *s = mkScreen(C_NAVY);
+  addBubbles(s, 5, lv_color_hex(0x7FD8E2), 5, 290, 480, 470, 6000, 10000, 10, 24);
+  mkHeader(s, SC_SERVICE, machineName);
+  mkLblC(s, "Kamu member\nWashable?", &f_fredoka_28, C_WHITE, 56);                         // 56..126
+  mkLblC(s, "Member dapat poin, kupon,\ndan voucher", &f_nunito_14, C_LIGHT, 128, 280);    // 128..168
+
+  lv_obj_t *a = mkClickBox(s, 15, 176, 290, 120, C_TEAL, 26, evtAskYes, NULL);            // 176..296
+  lv_obj_set_style_bg_opa(a, LV_OPA_80, LV_STATE_PRESSED);
+  for (int i = 0; i < 3; i++) {                                                           // coins rising above the card
+    lv_obj_t *c = mkBox(a, 20 + i * 26, 40, 12, 12, C_ORANGE, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+    animStart(c, riseCb, 0, 255, 2000, i * 650, true);
+  }
+  lv_obj_t *card = mkBox(a, 14, 46, 84, 58, C_WHITE, 10);
+  mkBox(card, 0, 10, 84, 10, C_NAVY, 0);
+  lv_obj_t *lg = mkBox(card, 10, 30, 20, 20, C_NAVY, LV_RADIUS_CIRCLE);
+  (void)lg;
+  mkBox(card, 38, 32, 36, 6, C_BLUE, 3);
+  mkBox(card, 38, 43, 24, 6, lv_color_hex(0xC9D6E3), 3);
+  lv_obj_t *nm = mkLbl(a, "Ya, saya member", &f_fredoka_20, C_NAVY);
+  lv_obj_set_pos(nm, 112, 30);
+  lv_obj_t *sb = mkLbl(a, "Masuk pakai nomor\nWhatsApp", &f_nunito_14, C_NAVY);
+  lv_obj_set_pos(sb, 112, 62);
+
+  lv_obj_t *b = mkClickBox(s, 15, 306, 290, 104, C_NAVY2, 26, evtAskNo, NULL);            // 306..410
+  lv_obj_set_style_border_width(b, 3, 0);
+  lv_obj_set_style_border_color(b, C_BLUE, 0);
+  lv_obj_t *qr = mkBox(b, 14, 20, 56, 56, C_WHITE, 10);
+  mkBox(qr, 8, 8, 14, 14, C_NAVY, 3); mkBox(qr, 34, 8, 14, 14, C_NAVY, 3); mkBox(qr, 8, 34, 14, 14, C_NAVY, 3);
+  mkBox(qr, 34, 34, 7, 7, C_BLUE, 0); mkBox(qr, 42, 42, 6, 6, C_BLUE, 0);
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t *ch = mkLbl(b, LV_SYMBOL_RIGHT, &lv_font_montserrat_20, C_BLUE);
+    lv_obj_set_pos(ch, 78 + i * 12, 14);
+    animStart(ch, textOpaCb, 40, 255, 700, i * 230, true, 700);
+  }
+  lv_obj_t *n2 = mkLbl(b, "Lanjut tanpa\nmember", &f_fredoka_20, C_WHITE);
+  lv_obj_set_pos(n2, 78, 38);
+  lv_obj_t *s2 = mkLbl(b, "Langsung pilih & bayar", &f_nunito_14, C_LIGHT);
+  lv_obj_set_pos(s2, 78, 80);
+
+  lv_obj_t *f = mkBox(s, 20, 424, 280, 44, C_NAVY2, 22);                                  // 424..468
+  mkCoin(f, 8, 6, 32);
+  lv_obj_t *fl = mkLbl(f, "Tiap cuci dapat poin, jadi voucher", &f_nunito_14, C_WHITE);
+  lv_obj_set_pos(fl, 50, 12);
+  return s;
+}
+
+// ---------------------------------------- Phone number
+static lv_obj_t *mPhoneVal, *mPhonePH, *mPhoneBtn, *mPhoneBtnLbl, *mCaret;
+
+static void phoneRefresh() {
+  char t[24];
+  fmtPhone(t, sizeof t, 0);
+  bool any = mDigits[0] != 0;
+  lv_label_set_text(mPhoneVal, t);
+  if (any) { lv_obj_clear_flag(mPhoneVal, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(mPhonePH, LV_OBJ_FLAG_HIDDEN); }
+  else     { lv_obj_add_flag(mPhoneVal, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(mPhonePH, LV_OBJ_FLAG_HIDDEN); }
+  lv_obj_update_layout(mPhoneVal);
+  lv_obj_set_x(mCaret, 74 + (any ? lv_obj_get_width(mPhoneVal) : 0) + 3);
+  bool ready = strlen(mDigits) >= 9;
+  lv_obj_set_style_bg_color(mPhoneBtn, ready ? C_TEAL : C_NAVY3, 0);
+  lv_obj_set_style_text_color(mPhoneBtnLbl, ready ? C_NAVY : C_LIGHT, 0);
+}
+static void evtKeyPhone(lv_event_t *e) {
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  size_t n = strlen(mDigits);
+  if (k == 10) mDigits[0] = 0;
+  else if (k == 11) { if (n) mDigits[n - 1] = 0; }
+  else if (n < 11 && !(n == 0 && k == 0)) { mDigits[n] = '0' + k; mDigits[n + 1] = 0; }
+  phoneRefresh();
+}
+static void evtPhoneGo(lv_event_t *) { if (strlen(mDigits) >= 9) showScreen(SC_CHECK); }
+// mock: fill a sample number and run the member flow (check -> code -> home)
+static void evtMockMember(lv_event_t *) { strlcpy(mDigits, "81234567890", sizeof mDigits); showScreen(SC_CHECK); }
+static void rippleSmallCb(void *var, int32_t v) {
+  lv_obj_t *o = (lv_obj_t *)var;
+  int sz = 26 + v * 14 / 100;
+  lv_obj_set_size(o, sz, sz);
+  lv_obj_set_pos(o, 16 - sz / 2, 16 - sz / 2);
+  lv_obj_set_style_border_opa(o, (lv_opa_t)(220 - v * 2), 0);
+}
+
+static lv_obj_t *buildPhone() {
+  lv_obj_t *s = mkScreen(C_NAVY);
+  addBubbles(s, 4, lv_color_hex(0x7FD8E2), 5, 290, 480, 470, 6000, 10000, 10, 22);
+  mkHeader(s, memberBack, NULL);
+  lv_obj_t *mock = mkPill(s, "Demo: masuk", 196, 9, 112, 32, C_NAVY, C_LIGHT, &f_nunito_14, evtMockMember, NULL);   // mock member login
+  lv_obj_set_style_border_width(mock, 2, 0);
+  lv_obj_set_style_border_color(mock, C_ORANGE, 0);
+  lv_obj_t *t = mkLbl(s, "Masuk Member", &f_fredoka_28, C_WHITE);                         // 54..89
+  lv_obj_set_pos(t, 16, 54);
+  lv_obj_t *st = mkLbl(s, "Masukkan nomor WhatsApp kamu", &f_nunito_14, C_LIGHT);        // 90..110
+  lv_obj_set_pos(st, 18, 90);
+
+  lv_obj_t *fld = mkBox(s, 15, 114, 290, 60, C_NAVY2, 18);                                // 114..174
+  lv_obj_set_style_border_width(fld, 3, 0);
+  lv_obj_set_style_border_color(fld, C_TEAL, 0);
+  lv_obj_t *cc = mkLbl(fld, "+62", &f_fredoka_28, C_LIGHT);
+  lv_obj_set_pos(cc, 14, 8);
+  mkBox(fld, 64, 12, 2, 30, C_NAVY3, 1);
+  mPhoneVal = mkLbl(fld, "", &f_fredoka_28, C_WHITE);
+  lv_obj_set_pos(mPhoneVal, 74, 8);
+  mPhonePH = mkLbl(fld, "812 3456 7890", &f_fredoka_28, lv_color_hex(0x6F8CAB));
+  lv_obj_set_pos(mPhonePH, 74, 8);
+  mCaret = mkBox(fld, 74, 10, 3, 32, C_TEAL, 1);
+  animStart(mCaret, bgOpaCb, 255, 0, 500, 0, true, 500);
+
+  lv_obj_t *wa = mkBox(s, 15, 180, 32, 32, C_MINT, LV_RADIUS_CIRCLE);                     // 180..212
+  lv_obj_t *rg = mkBox(wa, 0, 0, 26, 26, C_WHITE, LV_RADIUS_CIRCLE);
+  lv_obj_set_style_bg_opa(rg, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(rg, 2, 0);
+  lv_obj_set_style_border_color(rg, C_MINT, 0);
+  animStart(rg, rippleSmallCb, 0, 100, 1800, 0, true);
+  lv_obj_t *wi = mkLbl(wa, LV_SYMBOL_ENVELOPE, &lv_font_montserrat_16, C_NAVY);
+  lv_obj_center(wi);
+  lv_obj_t *wt = mkLbl(s, "Kode verifikasi dikirim\nlewat WhatsApp", &f_nunito_14, C_LIGHT);
+  lv_obj_set_pos(wt, 56, 178);
+
+  mPhoneBtn = mkPill(s, "Cek Member", 15, 214, 290, 38, C_NAVY3, C_LIGHT, &f_fredoka_20, evtPhoneGo, NULL);   // 214..252
+  mPhoneBtnLbl = lv_obj_get_child(mPhoneBtn, 0);
+  mkKeypad(s, 15, 260, 90, 48, 10, evtKeyPhone);   // 4 rows of 48 + gaps: y 260..470 (gap is 10 sideways, 6 vertically below)
+  phoneRefresh();
+  return s;
+}
+
+// ---------------------------------------- Checking
+static uint32_t chkStart = 0;
+static bool chkFound = false;
+static lv_obj_t *chkSk[2], *chkScan, *chkOrb, *chkName, *chkTier, *chkPh, *chkOk, *chkTitle, *chkSub, *chkBtn, *chkDot[3];
+
+static void shimCb(void *var, int32_t x) { lv_obj_set_x((lv_obj_t *)var, x); }
+static void orbCb(void *var, int32_t a) {
+  lv_obj_set_pos((lv_obj_t *)var, 145 + ((lv_trigo_cos((int16_t)a) * 105) >> 15) - 14, 112 + ((lv_trigo_sin((int16_t)a) * 42) >> 15) - 14);
+}
+static void hopCb(void *var, int32_t v) { lv_obj_set_y((lv_obj_t *)var, 345 - v); }
+static void evtSendCode(lv_event_t *) { showScreen(SC_OTP); }
+
+static void checkFoundApply() {
+  chkFound = true;
+  for (int i = 0; i < 2; i++) { lv_anim_del(lv_obj_get_child(chkSk[i], 0), NULL); lv_obj_add_flag(chkSk[i], LV_OBJ_FLAG_HIDDEN); }
+  lv_anim_del(chkScan, NULL); lv_obj_add_flag(chkScan, LV_OBJ_FLAG_HIDDEN);
+  lv_anim_del(chkOrb, NULL);  lv_obj_add_flag(chkOrb, LV_OBJ_FLAG_HIDDEN);
+  for (int i = 0; i < 3; i++) { lv_anim_del(chkDot[i], NULL); lv_obj_add_flag(chkDot[i], LV_OBJ_FLAG_HIDDEN); }
+  lv_obj_clear_flag(chkName, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(chkTier, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(chkPh, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(chkOk, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(chkBtn, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(chkTitle, "Member ditemukan!");
+  lv_obj_set_style_text_color(chkTitle, C_MINT, 0);
+  lv_label_set_text(chkSub, "Halo, " MEMBER_NAME "! Kami kirim kode\nke WhatsApp kamu.");
+}
+
+static lv_obj_t *buildCheck() {
+  lv_obj_t *s = mkScreen(C_NAVY);
+  addBubbles(s, 4, lv_color_hex(0x7FD8E2), 5, 290, 480, 470, 6000, 10000, 10, 22);
+  mkHeader(s, SC_PHONE, "Member");
+
+  lv_obj_t *card = mkBox(s, 15, 60, 290, 170, C_TEAL, 24);                                 // 60..230
+  lv_obj_set_style_clip_corner(card, true, 0);
+  mkLogo(card, 14, 12, 30, false);
+  lv_obj_t *wm = mkLbl(card, "washable", &f_fredoka_20, C_NAVY);
+  lv_obj_set_pos(wm, 52, 11);
+  for (int i = 0; i < 2; i++) {                                                            // skeleton lines with shimmer
+    int w = i ? 140 : 200, h = i ? 18 : 26;
+    chkSk[i] = mkBox(card, 16, 62 + i * 36, w, h, lv_color_hex(0x0A8FA0), 9);
+    lv_obj_set_style_clip_corner(chkSk[i], true, 0);
+    lv_obj_t *sh = mkBox(chkSk[i], -50, 0, 50, h, C_WHITE, 0);
+    lv_obj_set_style_bg_opa(sh, LV_OPA_50, 0);
+    animStart(sh, shimCb, -50, w, 1300, i * 200, true);
+  }
+  chkScan = mkBox(card, 0, 52, 290, 4, C_WHITE, 2);
+  animStart(chkScan, posYCb, 52, 160, 1500, 0, true, 1500);
+  chkOrb = mkBox(card, 0, 0, 28, 28, C_WHITE, LV_RADIUS_CIRCLE);                          // magnifier orbiting the card
+  lv_obj_set_style_bg_opa(chkOrb, LV_OPA_20, 0);
+  lv_obj_set_style_border_width(chkOrb, 3, 0);
+  lv_obj_set_style_border_color(chkOrb, C_WHITE, 0);
+  animStart(chkOrb, orbCb, 0, 359, 3000, 0, true);
+
+  chkName = mkLbl(card, MEMBER_FULL, &f_fredoka_36, C_NAVY);
+  lv_obj_set_pos(chkName, 16, 56);
+  chkTier = mkLbl(card, MEMBER_TIER, &f_nunito_16, C_NAVY);
+  lv_obj_set_pos(chkTier, 16, 108);
+  char ph[40];
+  fmtPhone(ph, sizeof ph, 2);
+  chkPh = mkLbl(card, ph, &f_nunito_14, C_NAVY);
+  lv_obj_set_pos(chkPh, 16, 134);
+  chkOk = mkBox(card, 222, 12, 52, 52, C_MINT, LV_RADIUS_CIRCLE);
+  lv_obj_t *ck = mkLbl(chkOk, LV_SYMBOL_OK, &lv_font_montserrat_28, C_NAVY);
+  lv_obj_center(ck);
+  lv_obj_add_flag(chkName, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(chkTier, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(chkPh, LV_OBJ_FLAG_HIDDEN);   lv_obj_add_flag(chkOk, LV_OBJ_FLAG_HIDDEN);
+
+  chkTitle = mkLblC(s, "Memeriksa member", &f_fredoka_28, C_WHITE, 250);                   // 250..285
+  char sub[64];
+  fmtPhone(ph, sizeof ph, 1);
+  snprintf(sub, sizeof sub, "Nomor %s", ph);
+  chkSub = mkLblC(s, sub, &f_nunito_16, C_LIGHT, 292);                                     // 292..338
+  for (int i = 0; i < 3; i++) {
+    chkDot[i] = mkBox(s, 140 + i * 18, 345, 12, 12, C_TEAL, LV_RADIUS_CIRCLE);
+    animStart(chkDot[i], hopCb, 345, 335, 450, i * 150, true, 450);
+  }
+  chkBtn = mkPill(s, "Kirim kode WhatsApp", 30, 392, 260, 56, C_MINT, C_NAVY, &f_fredoka_20, evtSendCode, NULL);
+  lv_obj_add_flag(chkBtn, LV_OBJ_FLAG_HIDDEN);
+  chkFound = false;
+  chkStart = millis();
+  return s;
+}
+
+// ---------------------------------------- Code (OTP)
+static uint32_t otpStart = 0;
+static int otpLast = -1;
+static lv_obj_t *mBox[6], *mBoxLbl[6], *mOtpBtn, *mOtpBtnLbl, *mOtpMsg, *mOtpResend;
+
+static void otpRefresh() {
+  size_t n = strlen(mOtp);
+  for (int i = 0; i < 6; i++) {
+    char t[2] = { i < (int)n ? mOtp[i] : ' ', 0 };
+    lv_label_set_text(mBoxLbl[i], t);
+    lv_obj_center(mBoxLbl[i]);
+    lv_obj_set_style_border_color(mBox[i], i == (int)n && n < 6 ? C_TEAL : (i < (int)n ? C_BLUE : C_NAVY3), 0);
+  }
+  bool ready = n == 6;
+  lv_obj_set_style_bg_color(mOtpBtn, ready ? C_TEAL : C_NAVY3, 0);
+  lv_obj_set_style_text_color(mOtpBtnLbl, ready ? C_NAVY : C_LIGHT, 0);
+}
+static void evtKeyOtp(lv_event_t *e) {
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  size_t n = strlen(mOtp);
+  lv_label_set_text(mOtpMsg, "");
+  if (k == 10) mOtp[0] = 0;
+  else if (k == 11) { if (n) mOtp[n - 1] = 0; }
+  else if (n < 6) { mOtp[n] = '0' + k; mOtp[n + 1] = 0; }
+  otpRefresh();
+}
+static void evtOtpGo(lv_event_t *) {
+  if (strlen(mOtp) != 6) return;
+  if (!strcmp(mOtp, MEMBER_DEMO_OTP)) { memberActive = true; showScreen(SC_MHOME); }
+  else {
+    lv_label_set_text(mOtpMsg, "Kode salah, coba lagi");
+    mOtp[0] = 0;
+    otpRefresh();
+    ledFlash(LC_RED, 2);
+  }
+}
+static void evtResend(lv_event_t *) {
+  if (millis() - otpStart >= OTP_RESEND_SEC * 1000UL) { otpStart = millis(); otpLast = -1; lv_label_set_text(mOtpMsg, "Kode dikirim ulang"); }
+}
+static void otpTick(uint32_t now) {
+  int left = OTP_RESEND_SEC - (int)((now - otpStart) / 1000);
+  if (left < 0) left = 0;
+  if (left != otpLast) {
+    otpLast = left;
+    char t[48];
+    if (left) snprintf(t, sizeof t, "Kirim ulang kode dalam %d:%02d", left / 60, left % 60);
+    else snprintf(t, sizeof t, "Tekan di sini untuk kirim ulang");
+    lv_label_set_text(mOtpResend, t);
+  }
+}
+static void dotHopCb(void *var, int32_t v) {
+  lv_obj_set_style_bg_opa((lv_obj_t *)var, (lv_opa_t)(100 + v * 155 / 100), 0);
+}
+
+static lv_obj_t *buildOtp() {
+  lv_obj_t *s = mkScreen(C_NAVY);
+  addBubbles(s, 3, lv_color_hex(0x7FD8E2), 5, 290, 480, 470, 6000, 10000, 10, 22);
+  mkHeader(s, SC_PHONE, "Member");
+  lv_obj_t *t = mkLbl(s, "Masukkan kode", &f_fredoka_28, C_WHITE);                          // 54..89
+  lv_obj_set_pos(t, 16, 54);
+  char ph[40], sub[96];
+  fmtPhone(ph, sizeof ph, 1);
+  snprintf(sub, sizeof sub, "6 digit dikirim ke WhatsApp\n%s", ph);
+  lv_obj_t *st = mkLbl(s, sub, &f_nunito_14, C_LIGHT);                                       // 90..130
+  lv_obj_set_pos(st, 18, 90);
+  lv_obj_t *dm = mkLbl(s, "Demo: " MEMBER_DEMO_OTP, &f_nunito_14, C_MUTED);
+  lv_obj_align(dm, LV_ALIGN_TOP_RIGHT, -14, 112);
+
+  for (int i = 0; i < 6; i++) {                                                              // y 138..190
+    mBox[i] = mkBox(s, 15 + i * 49, 138, 42, 52, C_NAVY2, 12);
+    lv_obj_set_style_border_width(mBox[i], 3, 0);
+    lv_obj_set_style_border_color(mBox[i], C_NAVY3, 0);
+    mBoxLbl[i] = mkLbl(mBox[i], " ", &f_fredoka_28, C_WHITE);
+    lv_obj_center(mBoxLbl[i]);
+  }
+  mOtpMsg = mkLbl(s, "", &f_nunito_14, lv_color_hex(0xFF6B6B));                              // 194..214
+  lv_obj_set_pos(mOtpMsg, 18, 194);
+  lv_obj_t *rs = mkClickBox(s, 15, 214, 290, 30, C_NAVY, 15, evtResend, NULL);               // 214..244
+  lv_obj_set_style_bg_opa(rs, LV_OPA_TRANSP, 0);
+  lv_obj_t *bub = mkBox(rs, 0, 3, 46, 24, C_MINT, 12);
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t *d = mkBox(bub, 9 + i * 11, 9, 7, 7, C_NAVY, LV_RADIUS_CIRCLE);
+    animStart(d, dotHopCb, 0, 100, 450, i * 150, true, 450);
+  }
+  mOtpResend = mkLbl(rs, "", &f_nunito_14, C_LIGHT);
+  lv_obj_set_pos(mOtpResend, 56, 5);
+
+  mOtpBtn = mkPill(s, "Verifikasi", 15, 248, 290, 38, C_NAVY3, C_LIGHT, &f_fredoka_20, evtOtpGo, NULL);   // 250..288
+  mOtpBtnLbl = lv_obj_get_child(mOtpBtn, 0);
+  mkKeypad(s, 15, 294, 90, 40, 8, evtKeyOtp, 6);                                                           // 294..472
+  mOtp[0] = 0;
+  otpStart = millis();
+  otpLast = -1;
+  otpRefresh();
+  otpTick(millis());
+  return s;
+}
+
+// ---------------------------------------- Member home (points, coupons, vouchers)
+struct MItem { const char *value, *title, *note; uint32_t col; int cost; };
+static const MItem KUPON[3] = {
+  { "3rb",    "Diskon Rp 3.000",   "Cuci · s/d 30 Nov",      0x3FA9F5, 0 },
+  { "Gratis", "Kering 10 menit",   "Pengering · s/d 15 Des", 0xFF9F43, 0 },
+  { "10%",    "Diskon 10%",        "Semua · s/d 30 Nov",     0x00B4C5, 0 },
+};
+static const MItem TUKAR[3] = {
+  { "5rb",    "Voucher Rp 5.000",  "300 poin",  0x3FA9F5, 300 },
+  { "Gratis", "Cuci Hemat gratis", "600 poin",  0x2ECC71, 600 },
+  { "10rb",   "Voucher Rp 10.000", "900 poin",  0xFF9F43, 900 },
+};
+static lv_obj_t *mhPts, *mhBar, *mhGold, *mhTabK, *mhTabT, *mhTabKL, *mhTabTL;
+static lv_obj_t *mhStub[3], *mhStubL[3], *mhTitle[3], *mhNote[3], *mhBtn[3], *mhBtnL[3];
+
+static void fmtInt(char *out, size_t n, int v) {
+  char tmp[16];
+  snprintf(tmp, sizeof tmp, "%d", v);
+  int len = strlen(tmp), j = 0;
+  char g[24];
+  for (int i = 0; i < len && j < 22; i++) { if (i && (len - i) % 3 == 0) g[j++] = '.'; g[j++] = tmp[i]; }
+  g[j] = 0;
+  snprintf(out, n, "%s", g);
+}
+
+static void mhRefresh() {
+  char t[32];
+  fmtInt(t, sizeof t, mPoints);
+  lv_label_set_text(mhPts, t);
+  lv_bar_set_value(mhBar, mPoints * 100 / 1500 > 100 ? 100 : mPoints * 100 / 1500, LV_ANIM_OFF);
+  fmtInt(t, sizeof t, mPoints >= 1500 ? 0 : 1500 - mPoints);
+  char g[48];
+  snprintf(g, sizeof g, "%s poin lagi ke Gold", t);
+  lv_label_set_text(mhGold, g);
+  bool k = mTab == 0;
+  lv_obj_set_style_bg_color(mhTabK, k ? C_TEAL : C_NAVY2, 0);
+  lv_obj_set_style_bg_color(mhTabT, k ? C_NAVY2 : C_TEAL, 0);
+  lv_obj_set_style_text_color(mhTabKL, k ? C_NAVY : C_WHITE, 0);
+  lv_obj_set_style_text_color(mhTabTL, k ? C_WHITE : C_NAVY, 0);
+  for (int i = 0; i < 3; i++) {
+    const MItem &it = k ? KUPON[i] : TUKAR[i];
+    lv_obj_set_style_bg_color(mhStub[i], lv_color_hex(it.col), 0);
+    lv_label_set_text(mhStubL[i], it.value);
+    lv_obj_center(mhStubL[i]);
+    lv_label_set_text(mhTitle[i], it.title);
+    lv_label_set_text(mhNote[i], (!k && mClaimed[i]) ? "Voucher siap dipakai" : it.note);
+    const char *bt; lv_color_t bg, fg = C_NAVY;
+    if (k) { bool u = mUsed[i]; bt = u ? "Dipakai" : "Pakai"; bg = u ? C_MINT : C_TEAL; }
+    else if (mClaimed[i]) { bt = "Diklaim"; bg = C_MINT; }
+    else if (mPoints >= it.cost) { bt = "Klaim"; bg = C_ORANGE; }
+    else { bt = "Kurang"; bg = C_NAVY3; fg = C_LIGHT; }
+    lv_obj_set_style_bg_color(mhBtn[i], bg, 0);
+    lv_label_set_text(mhBtnL[i], bt);
+    lv_obj_set_style_text_color(mhBtnL[i], fg, 0);
+    lv_obj_center(mhBtnL[i]);
+  }
+}
+static void evtTab(lv_event_t *e) { mTab = (int)(intptr_t)lv_event_get_user_data(e); mhRefresh(); }
+static void evtItem(lv_event_t *e) {
+  int i = (int)(intptr_t)lv_event_get_user_data(e);
+  if (mTab == 0) mUsed[i] = true;
+  else if (!mClaimed[i] && mPoints >= TUKAR[i].cost) { mPoints -= TUKAR[i].cost; mClaimed[i] = true; }
+  mhRefresh();
+}
+static void evtMemberExit(lv_event_t *) { showScreen(SC_IDLE); }
+static void evtMemberNext(lv_event_t *) { showScreen(SC_CYCLE); }
+
+static lv_obj_t *buildMemberHome() {
+  lv_obj_t *s = mkScreen(C_NAVY);
+  addBubbles(s, 3, lv_color_hex(0x7FD8E2), 5, 290, 480, 470, 6000, 10000, 10, 22);
+  mkLogo(s, 16, 12, 30, false);
+  mkWordmark(s, 52, 11, &f_fredoka_20);
+  mkPill(s, "Keluar", 236, 8, 72, 34, C_NAVY3, C_WHITE, &f_nunito_14, evtMemberExit, NULL);
+
+  lv_obj_t *card = mkBox(s, 15, 52, 290, 138, C_NAVY2, 24);                                   // 52..190
+  mkCoin(card, 14, 14, 62);
+  lv_obj_t *hi = mkLbl(card, "Halo, " MEMBER_NAME "!", &f_nunito_14, C_LIGHT);
+  lv_obj_set_pos(hi, 88, 8);
+  mhPts = mkLbl(card, "", &f_fredoka_36, C_WHITE);
+  lv_obj_set_pos(mhPts, 88, 24);
+  lv_obj_t *chip = mkBox(card, 88, 74, 118, 24, lv_color_hex(0xC9D6E3), 12);
+  lv_obj_t *cl = mkLbl(chip, MEMBER_TIER, &f_nunito_14, C_NAVY);
+  lv_obj_center(cl);
+  mhBar = lv_bar_create(card);
+  lv_obj_set_size(mhBar, 262, 10);
+  lv_obj_set_pos(mhBar, 14, 108);
+  lv_bar_set_range(mhBar, 0, 100);
+  lv_obj_set_style_bg_color(mhBar, C_NAVY3, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(mhBar, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(mhBar, C_BLUE, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(mhBar, 5, LV_PART_MAIN);
+  lv_obj_set_style_radius(mhBar, 5, LV_PART_INDICATOR);
+  lv_obj_t *sh = mkBox(card, 14, 108, 30, 10, C_WHITE, 5);                                    // shimmer over the bar
+  lv_obj_set_style_bg_opa(sh, LV_OPA_30, 0);
+  animStart(sh, shimCb, 14, 246, 1800, 0, true);
+  mhGold = mkLbl(card, "", &f_nunito_14, C_LIGHT);
+  lv_obj_set_pos(mhGold, 14, 118);
+
+  mhTabK = mkClickBox(s, 15, 198, 142, 38, C_TEAL, 19, evtTab, (void *)(intptr_t)0);          // 198..236
+  mhTabKL = mkLbl(mhTabK, "Kupon saya", &f_nunito_16, C_NAVY); lv_obj_center(mhTabKL);
+  mhTabT = mkClickBox(s, 163, 198, 142, 38, C_NAVY2, 19, evtTab, (void *)(intptr_t)1);
+  mhTabTL = mkLbl(mhTabT, "Tukar poin", &f_nunito_16, C_WHITE); lv_obj_center(mhTabTL);
+
+  for (int i = 0; i < 3; i++) {                                                               // rows 244..434
+    lv_obj_t *row = mkBox(s, 15, 244 + i * 66, 290, 58, C_NAVY2, 16);
+    lv_obj_set_style_clip_corner(row, true, 0);
+    mhStub[i] = mkBox(row, 0, 0, 68, 58, C_BLUE, 0);
+    mhStubL[i] = mkLbl(mhStub[i], "", &f_fredoka_20, C_NAVY);
+    mkBox(row, 68, 0, 3, 58, C_NAVY, 0);
+    mhTitle[i] = mkLbl(row, "", &f_nunito_14, C_WHITE);
+    lv_label_set_long_mode(mhTitle[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_size(mhTitle[i], 128, 20);
+    lv_obj_set_pos(mhTitle[i], 80, 8);
+    mhNote[i] = mkLbl(row, "", &f_nunito_14, C_MUTED);
+    lv_label_set_long_mode(mhNote[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_size(mhNote[i], 128, 20);
+    lv_obj_set_pos(mhNote[i], 80, 30);
+    mhBtn[i] = mkClickBox(row, 212, 11, 70, 36, C_TEAL, 18, evtItem, (void *)(intptr_t)i);
+    mhBtnL[i] = mkLbl(mhBtn[i], "", &f_nunito_14, C_NAVY);
+  }
+  mkPill(s, "Lanjut pilih program", 15, 440, 290, 36, C_TEAL, C_NAVY, &f_fredoka_20, evtMemberNext, NULL);   // 440..476
+  mhRefresh();
+  return s;
+}
+
 // ============================== SCREEN: IDLE ==============================
 static lv_obj_t *idleWifi = NULL;
 static void wifiIconUpdate() {
   if (idleWifi && curScr == SC_IDLE)
     lv_obj_set_style_text_color(idleWifi, WiFi.status() == WL_CONNECTED ? C_MINT : C_ORANGE, 0);
+}
+
+static lv_obj_t *idleJob[2], *idleJobL[2];
+static void idleJobsUpdate(uint32_t now) {
+  for (int k = 0; k < 2; k++) {
+    if (jobs[k].st == JS_FREE) { lv_obj_add_flag(idleJob[k], LV_OBJ_FLAG_HIDDEN); continue; }
+    char t[32];
+    if (jobs[k].st == JS_RUN) { int r = jobRemainSec(k, now); snprintf(t, sizeof t, "%s %02d:%02d", k ? "Kering" : "Cuci", r / 60, r % 60); }
+    else snprintf(t, sizeof t, "%s selesai", k ? "Kering" : "Cuci");
+    lv_label_set_text(idleJobL[k], t);
+    lv_obj_center(idleJobL[k]);
+    lv_obj_clear_flag(idleJob[k], LV_OBJ_FLAG_HIDDEN);
+  }
+}
+static void evtIdleJob(lv_event_t *e) {
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  svc = k;
+  showScreen(jobs[k].st == JS_RUN ? SC_RUN : SC_DONE);
 }
 
 static lv_obj_t *buildIdle() {
@@ -688,18 +1345,18 @@ static lv_obj_t *buildIdle() {
   lv_obj_t *gl = mkLbl(gear, LV_SYMBOL_SETTINGS, &lv_font_montserrat_16, C_LIGHT);
   lv_obj_center(gl);
 
-  mkLogo(s, 98, 54, 124, true);                                     // y 54..178
-  mkLblC(s, "Cucian kotor?\nGampang.", &f_fredoka_28, C_WHITE, 186);  // y 186..256
-  mkLblC(s, "Cuci atau keringkan sendiri,\nbayar pakai QRIS.", &f_nunito_16, C_LIGHT, 262);  // ..308
+  mkLogo(s, 98, 54, 124, true);                                                       // 54..178
+  mkLblC(s, "Cucian kotor?\nGampang.", &f_fredoka_28, C_WHITE, 186);                   // 186..256
+  mkLblC(s, "Cuci atau keringkan sendiri,\nbayar pakai QRIS.", &f_nunito_16, C_LIGHT, 262);   // 262..308
 
-  lv_obj_t *cta = mkBox(s, 35, 316, 250, 54, C_TEAL, 27);           // y 316..370
+  lv_obj_t *cta = mkBox(s, 35, 316, 250, 54, C_TEAL, 27);                              // 316..370
   lv_obj_t *cl = mkLbl(cta, "Sentuh untuk mulai", &f_fredoka_20, C_NAVY);
   lv_obj_align(cl, LV_ALIGN_LEFT_MID, 22, 0);
   lv_obj_t *ar = mkLbl(cta, LV_SYMBOL_RIGHT, &lv_font_montserrat_20, C_NAVY);
   lv_obj_align(ar, LV_ALIGN_RIGHT_MID, -20, 0);
   animStart(ar, transXCb, 0, 8, 500, 0, true, 500);
 
-  if (cfg.owner[0]) {                                               // y 382..402
+  if (cfg.owner[0]) {                                                                  // 382..402
     char ow[64];
     snprintf(ow, sizeof ow, "Dikelola oleh %s", cfg.owner);
     lv_obj_t *o = mkLblC(s, ow, &f_nunito_14, C_MUTED, 382);
@@ -707,9 +1364,15 @@ static lv_obj_t *buildIdle() {
     lv_obj_set_height(o, 20);
   }
 
-  // waves: crest tops are now at y >= 410, below the button and owner line
+  // waves: crest tops are at y >= 410, below the button and the owner line
   mkWave(s, 0, 440, SCREEN_W, SCREEN_H, lv_color_hex(0x0C5F81), 48, 6, 5200);
   mkWave(s, 0, 456, SCREEN_W, SCREEN_H, lv_color_hex(0x2B73B0), 48, 6, 3400);
+
+  for (int k = 0; k < 2; k++) {                                                        // running machines: 414..446
+    idleJob[k] = mkClickBox(s, 12 + k * 150, 414, 146, 32, k ? C_ORANGE : C_BLUE, 16, evtIdleJob, (void *)(intptr_t)k);
+    idleJobL[k] = mkLbl(idleJob[k], "", &f_nunito_14, C_NAVY);
+  }
+  idleJobsUpdate(millis());
 
   lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(s, evtGo, LV_EVENT_CLICKED, (void *)(intptr_t)SC_SERVICE);
@@ -717,10 +1380,26 @@ static lv_obj_t *buildIdle() {
 }
 
 // ============================== SCREEN: SERVICE ==============================
+static lv_obj_t *svcBadge[2], *svcBadgeL[2];
+
+static void svcBadgeUpdate(uint32_t now) {
+  for (int k = 0; k < 2; k++) {
+    if (jobs[k].st == JS_FREE) { lv_obj_add_flag(svcBadge[k], LV_OBJ_FLAG_HIDDEN); continue; }
+    char t[24];
+    if (jobs[k].st == JS_RUN) { int r = jobRemainSec(k, now); snprintf(t, sizeof t, "Berjalan %02d:%02d", r / 60, r % 60); }
+    else snprintf(t, sizeof t, "Selesai · ambil");
+    lv_label_set_text(svcBadgeL[k], t);
+    lv_obj_center(svcBadgeL[k]);
+    lv_obj_clear_flag(svcBadge[k], LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
 static void evtService(lv_event_t *e) {
-  svc = (int)(intptr_t)lv_event_get_user_data(e);
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  svc = k;
   pick = 1;
-  showScreen(SC_CYCLE);
+  if (jobs[k].st != JS_FREE) { showScreen(jobs[k].st == JS_RUN ? SC_RUN : SC_DONE); return; }   // machine in use: show its progress
+  showScreen(memberActive ? SC_CYCLE : SC_MASK);
 }
 
 static lv_obj_t *buildService() {
@@ -746,7 +1425,11 @@ static lv_obj_t *buildService() {
     lv_obj_set_pos(nm, 132, i ? 42 : 36);
     lv_obj_t *sub = mkLbl(card, i ? "Mulai dari\nRp 10.000" : "Mulai dari\nRp 12.000", &f_nunito_16, C_NAVY);
     lv_obj_set_pos(sub, 132, 88);
+    svcBadge[i] = mkBox(card, 126, 8, 150, 24, C_NAVY, 12);
+    lv_obj_clear_flag(svcBadge[i], LV_OBJ_FLAG_CLICKABLE);
+    svcBadgeL[i] = mkLbl(svcBadge[i], "", &f_nunito_14, C_WHITE);
   }
+  svcBadgeUpdate(millis());
   return s;
 }
 
@@ -927,7 +1610,8 @@ static void rippleCb(void *var, int32_t v) {   // v 0..100 -> ring size
   lv_obj_set_style_border_opa(o, (lv_opa_t)(220 - v * 2), 0);
 }
 
-static void evtStartRun(lv_event_t *) { showScreen(SC_RUN); }
+static void goRun() { jobStart(svc, pick); showScreen(SC_RUN); }    // payment confirmed: start the cycle, then show its progress
+static void evtStartRun(lv_event_t *) { goRun(); }
 
 static lv_obj_t *buildSuccess() {
   lv_obj_t *s = mkScreen(lv_color_hex(0x0C3A4A));
@@ -970,11 +1654,10 @@ static lv_obj_t *buildSuccess() {
 }
 
 // ============================== SCREEN: RUN (wash / dry) ==============================
-static uint32_t runStartMs = 0, runDurMs = 0;
 static int runLastSec = -1, runStage = -1;
 static lv_obj_t *runArc, *runTimeLbl, *runChip[3], *runChipLbl[3];
 
-static void evtSkip(lv_event_t *) { runStartMs = millis() - runDurMs; }
+static void evtSkip(lv_event_t *) { if (jobs[svc].st == JS_RUN) jobs[svc].startMs = millis() - jobs[svc].durMs; }
 
 static void setChips(int stage) {
   lv_color_t ac = accentCol();
@@ -1029,22 +1712,15 @@ static lv_obj_t *buildRun() {
   lv_obj_set_style_border_width(skip, 2, 0);
   lv_obj_set_style_border_color(skip, ac, 0);
 
-  runStartMs = millis();
-  runDurMs = curOpt()->minutes * secPerMin() * 1000UL;
   runLastSec = -1;
   runStage = -1;
-  setRelays(!dry, dry);
   return s;
 }
 
 static void runTick(uint32_t now) {
-  uint32_t el = now - runStartMs;
-  if (el >= runDurMs) {
-    setRelays(false, false);
-    showScreen(SC_DONE);
-    return;
-  }
-  int remain = (runDurMs - el + 999) / 1000;
+  if (jobs[svc].st != JS_RUN) { showScreen(SC_DONE); return; }     // the job engine already switched the relays off
+  uint32_t runDurMs = jobs[svc].durMs, el = jobElapsed(svc, now);
+  int remain = jobRemainSec(svc, now);
   if (remain != runLastSec) {
     runLastSec = remain;
     char tb[12];
@@ -1068,9 +1744,13 @@ static void doneRippleCb(void *var, int32_t v) {
   lv_obj_set_pos(o, 160 - sz / 2, 128 - sz / 2);
   lv_obj_set_style_border_opa(o, (lv_opa_t)(220 - v * 2), 0);
 }
-static void evtDrySvc(lv_event_t *) { svc = 1; pick = 1; showScreen(SC_CYCLE); }
+static void evtDrySvc(lv_event_t *) {
+  svc = 1; pick = 1;
+  showScreen(jobs[1].st == JS_RUN ? SC_RUN : SC_CYCLE);
+}
 
 static lv_obj_t *buildDone() {
+  if (jobs[svc].st == JS_DONE) jobs[svc].st = JS_FREE;           // customer is at the machine: collected
   lv_obj_t *s = mkScreen(lv_color_hex(0x0C3A4A));
   addBubbles(s, 8, lv_color_hex(0x7FE0B0), 5, 290, 480, 470, 4500, 8000, 10, 30);
   mkLogo(s, 16, 12, 30, false);
@@ -1110,7 +1790,7 @@ static char pinBuf[8];
 static int pinLen = 0;
 static lv_obj_t *pinDots[6], *pinMsg;
 
-static int pinTarget() { int n = (int)strlen(cfg.pin); return (n < 4 || n > 6) ? 4 : n; }
+static int pinTarget() { return 6; }
 
 static void pinUpdateDots() {
   int n = pinTarget();
@@ -1134,6 +1814,7 @@ static void evtPinKey(lv_event_t *e) {
       showScreen(SC_SETTINGS);
     } else {
       lv_label_set_text(pinMsg, "PIN salah, coba lagi");
+      ledFlash(LC_RED, 2);
       pinLen = 0; pinBuf[0] = 0;
       pinUpdateDots();
     }
@@ -1511,6 +2192,7 @@ static void webSave() {
   updateMachineName();
   saveCfg();
   otaConfigure(otaUrlEff());
+  Serial.printf("OTA: manifest URL = %s\n", otaUrlEff()[0] ? otaUrlEff() : "(not set)");
   webDirty = true;
   web.sendHeader("Location", "/?ok=1");
   web.send(303);
@@ -1551,14 +2233,14 @@ static void webUrlText(char *out, size_t n) {
     char host[32];
     webHost(host, sizeof host);
     snprintf(out, n, "http://%s.local\nhttp://%s\nLogin: admin + PIN admin%s", host, WiFi.localIP().toString().c_str(),
-             strcmp(cfg.pin, "1234") ? "" : "\nPIN masih 1234 - segera ganti!");
+             strcmp(cfg.pin, "123456") ? "" : "\nPIN masih 123456 - segera ganti!");
   } else {
     snprintf(out, n, "Wi-Fi belum terhubung.\nHubungkan Wi-Fi dulu agar PC bisa\nmembuka form pengaturan.");
   }
 }
 
 // ============================== SCREEN: SETTINGS ==============================
-static lv_obj_t *setVal[2];
+static lv_obj_t *setVal[3];
 static lv_obj_t *setBrightLbl, *setDemoLbl, *setResetLbl, *setWebLbl;
 static lv_obj_t *infoCard, *infoLbl, *infoBtn, *infoBtnLbl;
 static bool resetArmed = false;
@@ -1567,16 +2249,32 @@ static void onCfgSaved() { updateMachineName(); saveCfg(); }
 
 // device info card: owner / machine ID / server API / API key come from the web form;
 // the API URL and key stay hidden until the admin PIN is confirmed (30 s)
+static void fmtLastUpdate(char *out, size_t n) {
+  uint32_t e;
+  char v[16];
+  if (otaLastUpdate(&e, v, sizeof v)) {
+    static const char *MON[12] = { "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des" };
+    time_t t = (time_t)e + OTA_TZ_SECONDS;
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    snprintf(out, n, "%02d %s %d %02d:%02d WIB (v%s)", tmv.tm_mday, MON[tmv.tm_mon % 12], tmv.tm_year + 1900, tmv.tm_hour, tmv.tm_min, v);
+  } else {
+    snprintf(out, n, "belum ada (flash via USB)");
+  }
+}
+
 static void infoRefresh() {
   bool rv = infoRevealed();
-  char ost[72];
+  char ost[72], upd[64], rls[40];
+  if (rl.helloOk) snprintf(rls, sizeof rls, "terhubung (fw %s)", rl.fw); else snprintf(rls, sizeof rls, "tidak terhubung");
   otaStatusText(ost, sizeof ost);
-  char t[700];
-  snprintf(t, sizeof t, "Pemilik: %s\nID pemilik: %s\nID mesin: %s (%s)\nServer API: %s\nKunci API: %s\nFirmware v%s  ·  %s\nRAM %u KB\nMAC %s\nIP %s",
+  fmtLastUpdate(upd, sizeof upd);
+  char t[760];
+  snprintf(t, sizeof t, "Pemilik: %s\nID pemilik: %s\nID mesin: %s (%s)\nServer API: %s\nKunci API: %s\nFirmware v%s  ·  %s\nUpdate terakhir: %s\nBuild: %s %s\nKontroler relay: %s\nRAM %u KB\nMAC %s\nIP %s",
            cfg.owner[0] ? cfg.owner : "-", cfg.ownerId[0] ? cfg.ownerId : "-", cfg.machineId, machineName,
            cfg.apiUrl[0] ? (rv ? cfg.apiUrl : "tersimpan (disembunyikan)") : "belum diisi",
            cfg.apiKey[0] ? (rv ? cfg.apiKey : "********") : "belum diisi",
-           FW_VERSION, ost, (unsigned)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
+           FW_VERSION, ost, upd, __DATE__, __TIME__, rls, (unsigned)(ESP.getFreeHeap() / 1024), WiFi.macAddress().c_str(),
            WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "-");
   lv_label_set_text(infoLbl, t);
   lv_obj_update_layout(infoLbl);
@@ -1593,11 +2291,13 @@ static void settingsRefresh() {
   else snprintf(t, sizeof t, "Belum diatur");
   lv_label_set_text(setVal[0], t);
   lv_label_set_text(setVal[1], "****");
+  { char rt[48]; if (rl.helloOk) snprintf(rt, sizeof rt, "terhubung · fw %s", rl.fw); else snprintf(rt, sizeof rt, "kontroler tidak terhubung"); lv_label_set_text(setVal[2], rt); }
   infoRefresh();
 }
 
 static void evtSetWifi(lv_event_t *)  { showScreen(SC_WIFI); }
-static void evtSetPin(lv_event_t *)   { openEdit("PIN admin", "4 sampai 6 angka", cfg.pin, 7, true, true, 4, SC_SETTINGS, onCfgSaved); }
+static void evtSetRelay(lv_event_t *) { showScreen(SC_RTEST); }
+static void evtSetPin(lv_event_t *)   { openEdit("PIN admin", "Tepat 6 angka", cfg.pin, 7, true, true, 6, SC_SETTINGS, onCfgSaved); }
 static void evtReveal(lv_event_t *) {
   if (infoRevealed()) { infoRevealUntil = 0; infoRefresh(); }
   else { pinReveal = true; showScreen(SC_PIN); }
@@ -1688,6 +2388,7 @@ static lv_obj_t *buildSettings() {
   { char wt[160]; webUrlText(wt, sizeof wt); lv_label_set_text(setWebLbl, wt); }
   y += 120;
   mkRow(list, y, 60, LV_SYMBOL_KEYBOARD, "PIN admin", C_ORANGE, evtSetPin, &setVal[1]); y += 68;
+  mkRow(list, y, 60, LV_SYMBOL_CHARGE, "Tes relay", C_BLUE, evtSetRelay, &setVal[2]);   y += 68;
 
   // brightness slider row
   lv_obj_t *br = mkRow(list, y, 80, LV_SYMBOL_IMAGE, "Kecerahan layar", C_LIGHT, NULL, NULL);
@@ -1776,6 +2477,7 @@ static lv_obj_t *buildOta() {
 
 // install gate: idle screen (checked by the caller), nobody touched the kiosk for 5 min, inside the night window, enough heap
 static bool otaGate(uint32_t now) {
+  if (anyJobRunning()) return false;   // never reboot in the middle of a paid cycle (also when forced)
   if (otaForceInstall) return true;
   if (now - lastActMs < 300000UL) return false;
   if (!otaInWindow()) return false;
@@ -1792,10 +2494,68 @@ static void startOtaFlow() {
   showScreen(SC_OTA);
 }
 
+// ============================== SCREEN: RELAY TEST (installer) ==============================
+// Switches the 8 relays of the STM32 controller one by one (20 s safety timer, refreshed while this page is open).
+static lv_obj_t *rtBtn[8], *rtName[8], *rtState[8], *rtStatus;
+static uint8_t rtWant = 0;
+
+static void rtUpdate() {
+  char t[96];
+  if (rl.helloOk) snprintf(t, sizeof t, "Kontroler terhubung  ·  fw %s", rl.fw);
+  else if (rl.up) snprintf(t, sizeof t, "Kontroler menjawab, menyambung...");
+  else snprintf(t, sizeof t, "Kontroler tidak terhubung");
+  lv_label_set_text(rtStatus, t);
+  lv_obj_set_style_text_color(rtStatus, rl.helloOk ? C_MINT : lv_color_hex(0xFF6B6B), 0);
+  for (int i = 0; i < 8; i++) {
+    bool on = rl.mask & (1u << i), want = rtWant & (1u << i);
+    lv_obj_set_style_bg_color(rtBtn[i], on ? (i < 4 ? C_BLUE : C_ORANGE) : C_NAVY2, 0);
+    lv_obj_set_style_text_color(rtName[i], on ? C_NAVY : C_WHITE, 0);
+    lv_obj_set_style_text_color(rtState[i], on ? C_NAVY : C_MUTED, 0);
+    lv_label_set_text(rtState[i], on ? "HIDUP" : (want ? "menunggu..." : "MATI"));
+  }
+}
+static void evtRt(lv_event_t *e) {
+  uint8_t bit = (uint8_t)(1u << (int)(intptr_t)lv_event_get_user_data(e));
+  if (rtWant & bit) { rtWant &= (uint8_t)~bit; rlRelay(0, bit, 0); }
+  else { rtWant |= bit; rlRelay(bit, 0, 20); }
+  rtUpdate();
+}
+static void evtRtOff(lv_event_t *) { rtWant = 0; rlAllOff(); rtUpdate(); }
+
+static lv_obj_t *buildRelayTest() {
+  lv_obj_t *s = mkScreen(C_NAVY);
+  mkHeader(s, SC_SETTINGS, NULL);
+  lv_obj_t *t = mkLbl(s, "Tes relay", &f_fredoka_28, C_WHITE);                       // 58..93
+  lv_obj_set_pos(t, 16, 58);
+  rtStatus = mkLbl(s, "", &f_nunito_14, C_MUTED);                                     // 96..116
+  lv_label_set_long_mode(rtStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_size(rtStatus, 290, 20);
+  lv_obj_set_pos(rtStatus, 16, 96);
+  lv_obj_t *g1 = mkLbl(s, "CUCI  ·  kanal 1-4", &f_nunito_14, C_BLUE);                // 120..140
+  lv_obj_set_pos(g1, 16, 120);
+  lv_obj_t *g2 = mkLbl(s, "KERING  ·  kanal 5-8", &f_nunito_14, C_ORANGE);
+  lv_obj_set_pos(g2, 166, 120);
+  for (int i = 0; i < 8; i++) {                                                       // rows 142..422
+    int col = i / 4, row = i % 4;
+    rtBtn[i] = mkClickBox(s, 15 + col * 150, 142 + row * 72, 140, 64, C_NAVY2, 16, evtRt, (void *)(intptr_t)i);
+    char n[12];
+    snprintf(n, sizeof n, "Relay %d", i + 1);
+    rtName[i] = mkLbl(rtBtn[i], n, &f_fredoka_20, C_WHITE);
+    lv_obj_set_pos(rtName[i], 14, 6);
+    rtState[i] = mkLbl(rtBtn[i], "MATI", &f_nunito_14, C_MUTED);
+    lv_obj_set_pos(rtState[i], 14, 36);
+  }
+  mkPill(s, "Semua mati", 15, 432, 290, 40, lv_color_hex(0xEF4444), C_WHITE, &f_fredoka_20, evtRtOff, NULL);   // 432..472
+  rtWant = 0;
+  rtUpdate();
+  return s;
+}
+
 // ============================== SCREEN SWAP + BACKLIGHT FADE ==============================
 typedef lv_obj_t *(*BuildFn)();
 static const BuildFn BUILDERS[SC_COUNT] = { buildIdle, buildService, buildCycle, buildPay, buildSuccess, buildRun, buildDone,
-                                          buildPin, buildSettings, buildWifi, buildEdit, buildOta };
+                                          buildPin, buildSettings, buildWifi, buildEdit, buildOta,
+                                          buildMask, buildPhone, buildCheck, buildOtp, buildMemberHome, buildRelayTest };
 
 static Scr pendingScr = SC_IDLE;
 static int blDummy = 0;
@@ -1813,6 +2573,7 @@ static void blAnim(int from, int to, uint32_t t, lv_anim_ready_cb_t ready) {
 }
 
 static void swapNow(Scr id, bool first) {
+  if (curScr == SC_RTEST && id != SC_RTEST) { rtWant = 0; rlAllOff(); }
   pool ^= 1;
   nBubs = nWaves = nLogo = nDrums = 0;
   lv_obj_t *old = lv_scr_act();
@@ -1820,7 +2581,9 @@ static void swapNow(Scr id, bool first) {
   curScr = id;
   if (id == SC_SETTINGS || id == SC_WIFI || id == SC_EDIT) webStart(); else webStop();
   if (id != SC_PIN) pinReveal = false;
-  if (id == SC_IDLE) infoRevealUntil = 0;
+  if (id == SC_IDLE) { infoRevealUntil = 0; memberReset(); }
+  if (id == SC_SUCCESS) ledFlash(LC_GREEN, 3);
+  else if (id == SC_DONE) ledFlash(LC_GREEN, 5);
   lv_scr_load(n);
   if (!first && old && old != n) lv_obj_del(old);
 }
@@ -1842,12 +2605,18 @@ static void showScreen(Scr id) {
 // ============================== MAIN TICK ==============================
 static void appTick(lv_timer_t *) {
   uint32_t now = millis();
+  jobsTick(now);                       // cycles keep running during screen swaps, payments, admin pages...
   if (busy) return;
   otaTick(now, WiFi.status() == WL_CONNECTED, curScr == SC_IDLE);
+  static OtaState lastOs = OTA_IDLE;
+  static OtaState lastLog = (OtaState)255;
+  if (ota.state != lastLog) { lastLog = ota.state; Serial.printf("OTA: state=%d latest=%s msg=%s url=%s\n", (int)ota.state, ota.latest, ota.msg, otaUrlEff()[0] ? otaUrlEff() : "(not set)"); }
+  if (ota.state == OTA_ERROR && lastOs != OTA_ERROR) ledFlash(LC_RED, 3);
+  lastOs = ota.state;
   switch (curScr) {
     case SC_IDLE: {
       static uint32_t lw = 0;
-      if (now - lw > 1000) { lw = now; wifiIconUpdate(); }
+      if (now - lw > 1000) { lw = now; wifiIconUpdate(); idleJobsUpdate(now); }
       if (otaUpdateReady() && otaGate(now)) startOtaFlow();
       break;
     }
@@ -1874,12 +2643,27 @@ static void appTick(lv_timer_t *) {
       break;
     }
     case SC_SERVICE:
+      { static uint32_t lb = 0; if (now - lb > 1000) { lb = now; svcBadgeUpdate(now); } }
+      if (now - lastActMs > IDLE_TIMEOUT_MS) showScreen(SC_IDLE);
+      break;
     case SC_CYCLE:
+    case SC_MASK:
+    case SC_PHONE:
+    case SC_MHOME:
+      if (now - lastActMs > IDLE_TIMEOUT_MS) showScreen(SC_IDLE);
+      break;
+    case SC_CHECK:
+      if (!chkFound && now - chkStart > 2800) checkFoundApply();
+      if (now - lastActMs > IDLE_TIMEOUT_MS) showScreen(SC_IDLE);
+      break;
+    case SC_OTP:
+      otpTick(now);
       if (now - lastActMs > IDLE_TIMEOUT_MS) showScreen(SC_IDLE);
       break;
     case SC_SETTINGS: {
       static uint32_t lw = 0, li = 0;
-      if (now - li > 10000) { li = now; infoRefresh(); }
+      static bool lastLink = false;
+      if (now - li > 10000 || rl.helloOk != lastLink) { li = now; lastLink = rl.helloOk; infoRefresh(); settingsRefresh(); }
       if (webDirty) { webDirty = false; lastActMs = now; settingsRefresh(); }
       if (infoRevealUntil && now >= infoRevealUntil) { infoRevealUntil = 0; infoRefresh(); }
       if (now - lw > 1000) {
@@ -1896,6 +2680,13 @@ static void appTick(lv_timer_t *) {
     case SC_EDIT:
       if (now - lastActMs > ADMIN_TIMEOUT_MS) showScreen(SC_IDLE);
       break;
+    case SC_RTEST: {
+      static uint32_t lu = 0, lk = 0;
+      if (now - lu > 300) { lu = now; rtUpdate(); }
+      if (now - lk > 8000) { lk = now; if (rtWant) rlRelay(rtWant, 0, 20); }     // keep the safety timer alive while the page is open
+      if (now - lastActMs > ADMIN_TIMEOUT_MS) showScreen(SC_IDLE);
+      break;
+    }
     case SC_WIFI: {
       static uint32_t lw = 0;
       if (scanning) {
@@ -1920,7 +2711,7 @@ static void appTick(lv_timer_t *) {
     }
     case SC_PAY: {
       uint32_t el = (now - payStartMs) / 1000;
-      if (el >= PAY_SEC) { showScreen(SC_IDLE); break; }
+      if (el >= PAY_SEC) { ledFlash(LC_RED, 3); showScreen(SC_IDLE); break; }
       int left = PAY_SEC - (int)el;
       if (left != payLastSec) {
         payLastSec = left;
@@ -1932,7 +2723,7 @@ static void appTick(lv_timer_t *) {
       break;
     }
     case SC_SUCCESS:
-      if (now - payStartMs > SUCCESS_AUTO_MS) showScreen(SC_RUN);
+      if (now - payStartMs > SUCCESS_AUTO_MS) goRun();
       break;
     case SC_RUN:
       runTick(now);
@@ -1946,12 +2737,16 @@ static void appTick(lv_timer_t *) {
 }
 
 // ============================== SETUP / LOOP ==============================
+static void debugKey(char c);
+
 void setup() {
   Serial.begin(115200);
   otaBoot();
   Serial.printf("FW %s running from %s\n", FW_VERSION, esp_ota_get_running_partition()->label);
   spiffsOk = SPIFFS.begin(true);
   loadCfg();
+  rlBegin(cfg.machineId, FW_VERSION);
+  rlSetDebugHandler(debugKey);
   otaConfigure(otaUrlEff());
 
 #if RELAY_WASH_PIN >= 0
@@ -1970,6 +2765,7 @@ void setup() {
   ledcSetup(BL_CH, 5000, 8);
   ledcAttachPin(BL_PIN, BL_CH);
   ledcWrite(BL_CH, 0);
+  ledInit();
 
   gtInit();
 
@@ -1990,6 +2786,7 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  wifiAttemptMs = millis();
   wifiConnect();
 
   swapNow(SC_IDLE, true);
@@ -2000,18 +2797,25 @@ void setup() {
   lastActMs = millis();
 }
 
-static void debugKeys() {
-  while (Serial.available()) {
-    char c = Serial.read();
+static void debugKey(char c) {
+  {
     if (c >= '0' && c <= '9') {
       showScreen((Scr)(c - '0'));
-    } else if (c == 'w') { svc = 0; pick = 1; showScreen(SC_RUN); }
-    else if (c == 'd') { svc = 1; pick = 1; showScreen(SC_RUN); }
+    } else if (c == 'w') { svc = 0; pick = 1; goRun(); }
+    else if (c == 'd') { svc = 1; pick = 1; goRun(); }
+    else if (c == 'a') showScreen(SC_MASK);
+    else if (c == 'f') { memberBack = SC_IDLE; showScreen(SC_PHONE); }
+    else if (c == 'k') { strlcpy(mDigits, "81234567890", sizeof mDigits); showScreen(SC_CHECK); }
+    else if (c == 'l') { strlcpy(mDigits, "81234567890", sizeof mDigits); showScreen(SC_OTP); }
+    else if (c == 'h') { memberActive = true; showScreen(SC_MHOME); }
     else if (c == 'o') { otaForceCheck(); Serial.println("OTA: forced check"); }
     else if (c == 'O') { otaForceInstall = true; Serial.println("OTA: gate bypassed"); }
     else if (c == 'e') openEdit("Pemilik", "Nama pemilik atau usaha", cfg.owner, sizeof cfg.owner, false, false, 0, SC_SETTINGS, onCfgSaved);
-    else if (c == 'p') openEdit("PIN admin", "4 sampai 6 angka", cfg.pin, 7, true, true, 4, SC_SETTINGS, onCfgSaved);
+    else if (c == 'p') openEdit("PIN admin", "Tepat 6 angka", cfg.pin, 7, true, true, 6, SC_SETTINGS, onCfgSaved);
     else if (c == 'S' && curScr == SC_WIFI) { evtScan(NULL); Serial.println("scan started"); }
+    else if (c == 'r') { rlRelay((rl.mask & 1) ? 0 : 1, (rl.mask & 1) ? 1 : 0, 10); Serial.println("relay 1 toggled"); }
+    else if (c == 'x') { rlAllOff(); Serial.println("all relays off"); }
+    else if (c == 't') { showScreen(SC_RTEST); }
   }
 }
 
@@ -2021,9 +2825,10 @@ void loop() {
   lv_tick_inc(now - last);
   last = now;
   uint32_t d = lv_timer_handler();
+  ledTick(now);
   webTick();
   otaHealthTick(now);
-  debugKeys();
+  rlTick(now);
   if (now - perfLast >= 2000) {
     if (perfN) Serial.printf("scr=%d refresh/s=%lu avg_ms=%lu avg_kpx=%lu\n", (int)curScr,
                              (unsigned long)(perfN * 1000UL / (now - perfLast)),

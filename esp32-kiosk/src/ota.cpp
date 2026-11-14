@@ -197,6 +197,16 @@ static void installTask(void *) {
   p.putUChar("boots", 0);
   p.end();
   if (!Update.end(true)) { Update.abort(); setError("verifikasi image gagal"); vTaskDelete(NULL); return; }
+  {                                                // remember when this update was installed (clock is NTP-synced by the install gate)
+    Preferences q;
+    if (q.begin("ota", false)) {
+      q.putUInt("prevupd", q.getUInt("lastupd", 0));
+      q.putString("prevver", q.getString("lastver", ""));
+      q.putUInt("lastupd", (uint32_t)time(nullptr));
+      q.putString("lastver", ota.latest);
+      q.end();
+    }
+  }
   vTaskDelay(pdMS_TO_TICKS(800));
   ESP.restart();
 }
@@ -212,6 +222,9 @@ void otaBoot() {
     Serial.printf("OTA: first boots of new image: %u/3\n", b);
     if (b >= 3) {                                  // new image keeps failing -> go back to the other slot
       p.putString("badver", FW_VERSION);
+      uint32_t pu = p.getUInt("prevupd", 0);
+      if (pu) { p.putUInt("lastupd", pu); p.putString("lastver", p.getString("prevver", "")); }
+      else { p.remove("lastupd"); p.remove("lastver"); }
       p.putBool("pend", false);
       p.putUChar("boots", 0);
       const esp_partition_t *run = esp_ota_get_running_partition();
@@ -274,6 +287,18 @@ void otaInstall() {
 
 void otaAck() {
   if (ota.state == OTA_ERROR) ota.state = OTA_IDLE;
+}
+
+bool otaLastUpdate(uint32_t *epoch, char *ver, size_t n) {
+  Preferences p;
+  if (!p.begin("ota", true)) return false;
+  uint32_t e = p.getUInt("lastupd", 0);
+  String v = p.getString("lastver", "");
+  p.end();
+  if (e < 1700000000UL) return false;
+  *epoch = e;
+  strlcpy(ver, v.c_str(), n);
+  return true;
 }
 
 void otaStatusText(char *out, size_t n) {

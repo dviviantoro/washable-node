@@ -5,10 +5,12 @@ Writes src/version.h, builds with PlatformIO and produces dist/firmware.bin + di
 (version, sha256, size, min_version). Upload both files as assets of the GitHub release v1.2.0
 (the kiosks read .../releases/latest/download/manifest.json).
 Bench test with a laptop: python3 -m http.server -d dist  (build with -DOTA_ALLOW_HTTP=1)
+Runs from the repo root; the kiosk firmware lives in esp32-kiosk/.
 """
 import argparse, hashlib, json, pathlib, re, shutil, subprocess, sys
 
-root = pathlib.Path(__file__).resolve().parent.parent
+repo = pathlib.Path(__file__).resolve().parent.parent
+root = repo / "esp32-kiosk"                  # the PlatformIO project that is released over the air
 ap = argparse.ArgumentParser()
 ap.add_argument("version", help="semantic version, e.g. 1.2.0 (no leading v)")
 ap.add_argument("--min-version", default="", help="oldest version allowed to update directly")
@@ -22,7 +24,7 @@ if not re.fullmatch(r"\d+\.\d+\.\d+", a.version):
     f'#define FW_VERSION "{a.version}"\n')
 subprocess.run(["pio", "run"], cwd=root, check=True)
 src = root / ".pio" / "build" / "esp32-3248s035" / "firmware.bin"
-out = root / a.out
+out = repo / a.out
 out.mkdir(exist_ok=True)
 shutil.copy(src, out / "firmware.bin")
 data = (out / "firmware.bin").read_bytes()
