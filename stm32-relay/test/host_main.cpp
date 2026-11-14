@@ -10,6 +10,7 @@ static void relay(uint8_t ch, bool on) { printf("RELAY %u %d\n", ch + 1, on ? 1 
 int main() {
   CtrlHooks h = { tx, relay };
   Controller c(h, "0.1.0");
+  c.setResetCause("iwdg");
   c.begin(0);
   char line[512];
   while (fgets(line, sizeof line, stdin)) {

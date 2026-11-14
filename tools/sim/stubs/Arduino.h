@@ -17,6 +17,7 @@
 #define PROGMEM
 extern uint32_t g_ms;
 inline uint32_t millis() { return g_ms; }
+inline uint32_t micros() { return g_ms * 1000u; }
 inline void delay(uint32_t) {}
 inline void pinMode(int, int) {}
 inline void digitalWrite(int, int) {}

@@ -23,6 +23,18 @@ static void relayWrite(uint8_t ch, bool on) {
   digitalWrite(RELAY_PIN[ch], (on == (RELAY_ACTIVE_HIGH != 0)) ? HIGH : LOW);
 }
 
+// Why did we restart? Reported to the kiosk in the hello reply so a watchdog or brown-out reset shows up in its log.
+static const char *resetCause() {
+  const char *c = "other";
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) c = "iwdg";
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST)) c = "wwdg";
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)) c = "soft";
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PWRRST)) c = "power";
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)) c = "pin";
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+  return c;
+}
+
 static CtrlHooks hooks = { txFrame, relayWrite };
 static Controller ctrl(hooks, FW_VERSION);
 
@@ -37,6 +49,7 @@ void setup() {
     pinMode(RELAY_PIN[i], OUTPUT);
   }
   Serial.begin(115200);                            // USART2 on PA3 (RX) / PA2 (TX) in this variant
+  ctrl.setResetCause(resetCause());
   ctrl.begin(millis());
   IWatchdog.begin(2000000);                        // 2 s independent watchdog: a hung MCU resets and relays go off
 }
@@ -58,4 +71,5 @@ void loop() {
     }
   }
   ctrl.tick(now);
+  // MCU supply/temperature are reported as 0 (unknown): this STM32duino variant has no VREFINT/TEMPSENSOR channel mapping yet.
 }

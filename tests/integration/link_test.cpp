@@ -71,6 +71,23 @@ int main() {
   run(200);
   check("explicit off", relayState == 0);
 
+  // health check, both directions
+  rlHealthStart();
+  run(200);
+  check("health check is running", rlHealthBusy());
+  run(6000);
+  check("health check finished", rh.state == RH_DONE && !rh.linkFail);
+  check("ESP32 -> STM32: 10/10 pings answered", rh.pingSent == 10 && rh.pingOk == 10);
+  check("STM32 -> ESP32: self-test 10/10", rh.stGot && rh.stN == 10 && rh.stOk == 10);
+  check("controller report received (rx/tx counters, no bad frames)", rh.infoGot && rh.ctlRx > 10 && rh.ctlTx > 10 && rh.ctlBad == 0);
+  dropStmToEsp = true; rlHealthStart(); run(8000); dropStmToEsp = false;
+  check("health check with a dead return path finishes and shows 0 answers", rh.state == RH_DONE && rh.pingOk == 0 && !rh.infoGot);
+  run(4000);
+  dropEspToStm = true; run(4000); rlHealthStart();
+  check("health check without a link fails at once", rh.state == RH_DONE && rh.linkFail);
+  dropEspToStm = false; run(6000);
+  check("link recovers after the outage", rl.up && rl.helloOk);
+
   Serial.rx.push_back('#'); Serial.rx.push_back('h'); Serial.rx.push_back('\n');
   run(20);
   check("debug line '#h' reaches the handler", dbgKey == 'h');

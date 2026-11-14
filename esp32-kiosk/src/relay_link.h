@@ -22,11 +22,31 @@ struct RelayLink {
   bool helloOk;          // the controller answered "hello"
   uint8_t mask;          // relays as reported by the controller (bit0 = channel 1)
   char fw[16];           // controller firmware version
+  char rst[8];           // why the controller last restarted (from the hello reply)
   uint32_t upSec;        // controller uptime (s); a smaller value than before = it rebooted
   uint32_t rxOk, rxBad, txFrames, cmdFail;
   char lastErr[24];      // last nack reason
 };
 extern RelayLink rl;
+
+// ---- health check (both directions): ESP32 pings the STM32, the STM32 pings the ESP32, then the controller reports counters/sensors
+enum RlHealthState : uint8_t { RH_IDLE, RH_PING, RH_SELFTEST, RH_QUERY, RH_DONE };
+struct RlHealth {
+  RlHealthState state;
+  bool linkFail;                  // the controller was not reachable when the test started
+  uint8_t pingN, pingSent, pingOk;          // ESP32 -> STM32
+  uint32_t rttAvgUs, rttMaxUs;
+  bool stGot;                     // STM32 -> ESP32 result arrived
+  uint8_t stN, stOk;
+  uint32_t stRttMs, stMaxMs;
+  bool infoGot;                   // health report arrived
+  uint32_t ctlRx, ctlTx, ctlBad;
+  int vddMv, tempC;
+  uint32_t startedMs, doneMs;
+};
+extern RlHealth rh;
+void rlHealthStart();
+inline bool rlHealthBusy() { return rh.state != RH_IDLE && rh.state != RH_DONE; }
 
 void rlBegin(const char *machineId, const char *fwVersion);
 void rlTick(uint32_t nowMs);                        // call every loop() iteration

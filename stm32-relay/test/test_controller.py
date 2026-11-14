@@ -50,7 +50,33 @@ check("boot: 8 relays driven off, silent", len(rel(out)) == 8 and all(o == 0 for
 
 # 2. hello
 out = run([(100, HELLO)]); r = tx(out)
-check("hello -> ack with fw/relays", len(r) == 1 and r[0]["t"] == "ack" and r[0]["id"] == 1 and r[0]["fw"] == "0.1.0" and r[0]["relays"] == 8, r)
+check("hello -> ack with fw/relays", len(r) == 1 and r[0]["t"] == "ack" and r[0]["id"] == 1 and r[0]["fw"] == "0.1.0" and r[0]["relays"] == 8 and r[0]["rst"] == "iwdg" and r[0]["bad"] == 0, r)
+
+
+# 2b. health check, both directions
+out = run([(100, HELLO), (200, frame('{"v":1,"t":"ping","n":7}'))]); r = tx(out)
+check("ESP32->STM32 ping answered with the same number", any(x.get("t") == "pong" and x.get("n") == 7 for x in r), r)
+out = run([(100, HELLO), (300, frame('{"v":1,"id":5,"t":"cmd","op":"health"}'))]); r = tx(out)
+h = [x for x in r if x.get("id") == 5]
+check("health reply has counters", h and h[0]["rx"] == 2 and h[0]["bad"] == 0 and h[0]["rst"] == "iwdg" and "vdd" in h[0] and "temp" in h[0], r)
+ev = [(100, HELLO), (1000, frame('{"v":1,"id":6,"t":"cmd","op":"selftest","n":10}'))]
+for k in range(1, 11):                                  # the controller pings at 1100, 1200 ... 2000; we answer 20 ms later
+    ev += [(1000 + 100 * k, None), (1020 + 100 * k, frame('{"v":1,"t":"pong","n":%d}' % k))]
+ev += [(2100, frame('{"v":1,"t":"hb","seq":1}')), (2200, None)]
+r = tx(run(ev))
+pings = [x["n"] for x in r if x.get("t") == "ping"]
+st = [x for x in r if x.get("e") == "selftest"]
+check("STM32->ESP32 self-test sends 10 pings", pings == list(range(1, 11)), pings)
+check("self-test result: 10/10 ok, rtt ~20 ms", st and st[0]["ok"] == 10 and st[0]["n"] == 10 and 15 <= st[0]["rtt"] <= 25, st)
+ev2 = [(100, HELLO), (1000, frame('{"v":1,"id":6,"t":"cmd","op":"selftest","n":5}'))]
+for k in range(1, 6):                                   # pings 1..5; only 1 and 3 are answered
+    ev2 += [(1000 + 100 * k, None)]
+    if k in (1, 3): ev2 += [(1020 + 100 * k, frame('{"v":1,"t":"pong","n":%d}' % k))]
+ev2 += [(1700, frame('{"v":1,"t":"hb","seq":1}')), (2400, frame('{"v":1,"t":"hb","seq":2}')), (2600, None)]
+st2 = [x for x in tx(run(ev2)) if x.get("e") == "selftest"]
+check("self-test with lost pongs reports 2/5", st2 and st2[0]["ok"] == 2 and st2[0]["n"] == 5, st2)
+bad = [x for x in tx(run([(100, HELLO), (300, frame('{"v":1,"id":8,"t":"cmd","op":"selftest","n":99}'))])) if x.get("id") == 8]
+check("self-test with a bad count is refused", bad and bad[0]["t"] == "nack" and bad[0]["err"] == "args", bad)
 
 # 3. relay on with ttl, ttl expiry, evt
 cmd = frame('{"v":1,"id":12,"t":"cmd","op":"relay","on":[1,2],"off":[3,4],"ttl":10}')

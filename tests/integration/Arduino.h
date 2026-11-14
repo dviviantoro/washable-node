@@ -9,6 +9,7 @@
 #include <deque>
 extern uint32_t g_ms;
 inline uint32_t millis() { return g_ms; }
+inline uint32_t micros() { return g_ms * 1000u; }
 struct SerialStub {
   std::string tx;                 // everything the ESP32 writes (frames + log text), like the real UART0 TX
   std::deque<char> rx;            // bytes the ESP32 receives

@@ -41,12 +41,16 @@ pio run -d stm32-relay                  # build
 pio run -d stm32-relay -t upload        # flash with an ST-Link
 
 # tests (no hardware needed)
-./tests/run_host_tests.sh
+./tests/run_host_tests.sh               # STM32 controller + ESP32 link
+tools/sim/screenshots.sh test           # kiosk cycle / relay logic (needs one pio run first)
 ```
 
 Regenerate the screenshots after a UI change with `tools/sim/screenshots.sh` (needs one `pio run -d esp32-kiosk` first for the LVGL sources) and the drawings with `python3 tools/diagrams/gen_diagrams.py`.
 
 Open `washable.code-workspace` in VS Code so the PlatformIO extension sees each project (a PlatformIO project is a folder with a `platformio.ini`).
+
+Production review, safety model and open items before field use: [docs/production-readiness.md](docs/production-readiness.md).
+The serial `#x` debug keys are compiled out of the firmware; for bench work only, add `-DDEBUG_KEYS=1` to `build_flags` in `esp32-kiosk/platformio.ini` and remove it again before a release.
 
 ## Releases and tags
 

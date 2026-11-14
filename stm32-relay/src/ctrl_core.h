@@ -14,6 +14,9 @@
 #define HB_TIMEOUT_MS    3000UL
 #define SPEAK_WINDOW_MS  10000UL
 #define MAX_TTL_S        7200L
+#define ST_MAX           20          // pings in one self-test (STM32 -> ESP32 direction of the health check)
+#define ST_GAP_MS        100UL
+#define ST_WAIT_MS       800UL       // wait this long after the last ping for late answers
 
 struct CtrlHooks {
   void (*tx)(const char *frame, size_t n);     // send a complete "json*CRC\n" frame
@@ -26,6 +29,8 @@ class Controller {
 
   uint8_t mask() const { return relayMask; }
   uint32_t badFrames() const { return bad; }
+  void setSensors(int vddMv, int tempC) { vdd = vddMv; temp = tempC; }     // optional: MCU supply (mV) and temperature (C), 0 = unknown
+  void setResetCause(const char *c) { strlcpy_(rst, c, sizeof rst); }   // reported in the hello reply (why did the controller restart?)
 
   void begin(uint32_t now) { for (uint8_t i = 0; i < CTRL_RELAYS; i++) hk.relay(i, false); relayMask = 0; lastValid = 0; linked = false; (void)now; }
 
@@ -40,6 +45,7 @@ class Controller {
     }
     lastValid = now;
     linked = true;
+    rxOk++;
     if (failsafePending) { failsafePending = false; evtFailsafe(); }
 
     char t[8] = "";
@@ -52,6 +58,21 @@ class Controller {
       char j[96];
       snprintf(j, sizeof j, "{\"v\":1,\"t\":\"hb\",\"seq\":%ld,\"mask\":%u,\"up\":%lu}", seq, relayMask, (unsigned long)(now / 1000));
       reply(j);
+    } else if (!strcmp(t, "ping")) {                          // health check, ESP32 -> STM32: echo the number back
+      long n = 0;
+      rp::num(body, "n", &n);
+      char j[48];
+      snprintf(j, sizeof j, "{\"v\":1,\"t\":\"pong\",\"n\":%ld}", n);
+      reply(j);
+    } else if (!strcmp(t, "pong")) {                          // answer to one of our self-test pings
+      long n = 0;
+      if (stActive && rp::num(body, "n", &n) && n >= 1 && n <= stSent && !stGot[n - 1]) {
+        stGot[n - 1] = true;
+        stOk++;
+        uint32_t r = now - stSentAt[n - 1];
+        stRttSum += r;
+        if (r > stRttMax) stRttMax = r;
+      }
     } else if (!strcmp(t, "cmd")) {
       command(body, hasId, id, now);
     } else {
@@ -66,6 +87,7 @@ class Controller {
         setRelay(i, false);
         if (speakable(now)) evtRelay(i, "ttl");
       }
+    if (stActive) selfTestTick(now);
     if (relayMask && linkLost(now)) {                         // heartbeat lost -> everything off
       for (uint8_t i = 0; i < CTRL_RELAYS; i++) setRelay(i, false);
       failsafePending = true;
@@ -77,7 +99,32 @@ class Controller {
   const char *fw;
   uint8_t relayMask = 0;
   uint32_t offAt[CTRL_RELAYS] = {};
-  uint32_t lastValid = 0, bad = 0;
+  uint32_t lastValid = 0, bad = 0, rxOk = 0, txN = 0;
+  int vdd = 0, temp = 0;
+  // self-test (STM32 -> ESP32 pings)
+  bool stActive = false;
+  uint8_t stN = 0, stSent = 0, stOk = 0;
+  uint32_t stNext = 0, stLastSent = 0, stRttSum = 0, stRttMax = 0, stSentAt[ST_MAX] = {};
+  bool stGot[ST_MAX] = {};
+  void selfTestTick(uint32_t now) {
+    if (stSent < stN && (int32_t)(now - stNext) >= 0) {
+      char j[48];
+      stSentAt[stSent] = now;
+      stSent++;
+      snprintf(j, sizeof j, "{\"v\":1,\"t\":\"ping\",\"n\":%u}", stSent);
+      reply(j);
+      stNext = now + ST_GAP_MS;
+      stLastSent = now;
+    } else if (stSent >= stN && (stOk >= stN || (now - stLastSent) > ST_WAIT_MS)) {
+      char j[120];
+      snprintf(j, sizeof j, "{\"v\":1,\"t\":\"evt\",\"e\":\"selftest\",\"n\":%u,\"ok\":%u,\"rtt\":%lu,\"max\":%lu}", stN, stOk,
+               (unsigned long)(stOk ? stRttSum / stOk : 0), (unsigned long)stRttMax);
+      reply(j);
+      stActive = false;
+    }
+  }
+  char rst[8] = "";
+  static void strlcpy_(char *d, const char *s, size_t n) { size_t i = 0; for (; i + 1 < n && s[i]; i++) d[i] = s[i]; d[i] = 0; }
   bool linked = false, failsafePending = false;
 
   bool linkLost(uint32_t now) const { return !linked || (now - lastValid) > HB_TIMEOUT_MS; }
@@ -86,7 +133,7 @@ class Controller {
   void reply(const char *json) {
     char buf[200];
     size_t n = rp::frame(buf, sizeof buf, json);
-    if (n) hk.tx(buf, n);
+    if (n) { hk.tx(buf, n); txN++; }
   }
   void nack(bool hasId, long id, const char *err) {
     char j[96];
@@ -119,10 +166,22 @@ class Controller {
     char op[10] = "";
     rp::str(body, "op", op, sizeof op);
     if (!strcmp(op, "hello")) {
-      char x[64];
-      snprintf(x, sizeof x, ",\"fw\":\"%s\",\"relays\":%d", fw, CTRL_RELAYS);
+      char x[80];
+      snprintf(x, sizeof x, ",\"fw\":\"%s\",\"relays\":%d,\"rst\":\"%s\",\"bad\":%lu", fw, CTRL_RELAYS, rst, (unsigned long)bad);
       ack(id, x, now);
     } else if (!strcmp(op, "status")) {
+      ack(id, "", now);
+    } else if (!strcmp(op, "health")) {                       // counters and sensors, for the kiosk's health page
+      char x[140];
+      snprintf(x, sizeof x, ",\"fw\":\"%s\",\"rst\":\"%s\",\"rx\":%lu,\"tx\":%lu,\"bad\":%lu,\"vdd\":%d,\"temp\":%d",
+               fw, rst, (unsigned long)rxOk, (unsigned long)txN, (unsigned long)bad, vdd, temp);
+      ack(id, x, now);
+    } else if (!strcmp(op, "selftest")) {                     // "ping me n times": the STM32 -> ESP32 half of the health check
+      long n = 10;
+      rp::num(body, "n", &n);
+      if (n < 1 || n > ST_MAX) { nack(true, id, "args"); return; }
+      stN = (uint8_t)n; stSent = 0; stOk = 0; stRttSum = 0; stRttMax = 0; stLastSent = now; stNext = now + ST_GAP_MS; stActive = true;
+      for (uint8_t i = 0; i < ST_MAX; i++) stGot[i] = false;
       ack(id, "", now);
     } else if (!strcmp(op, "alloff")) {
       for (uint8_t i = 0; i < CTRL_RELAYS; i++) setRelay(i, false);

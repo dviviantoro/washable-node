@@ -7,7 +7,8 @@
 #define WIFI_AUTH_OPEN 0
 struct IPAddressStub { String toString() const { return "192.168.1.42"; } };
 struct WiFiStub {
-  int status() { return WL_CONNECTED; }
+  bool up = true;
+  int status() { return up ? WL_CONNECTED : WL_DISCONNECTED; }
   void mode(int) {} void disconnect() {} void begin(const char *, const char *) {} void setAutoReconnect(bool) {}
   IPAddressStub localIP() { return {}; }
   String macAddress() { return "24:6F:28:AB:12:34"; }

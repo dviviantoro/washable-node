@@ -1,5 +1,6 @@
 #include "ota.h"
 #include "version.h"
+#include "i18n.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -303,12 +304,12 @@ bool otaLastUpdate(uint32_t *epoch, char *ver, size_t n) {
 
 void otaStatusText(char *out, size_t n) {
   switch (ota.state) {
-    case OTA_DISABLED:    snprintf(out, n, "OTA belum diatur"); break;
-    case OTA_CHECKING:    snprintf(out, n, "memeriksa pembaruan..."); break;
-    case OTA_AVAILABLE:   snprintf(out, n, "tersedia v%s", ota.latest); break;
-    case OTA_DOWNLOADING: snprintf(out, n, "mengunduh %u%%", (unsigned)ota.progress); break;
-    case OTA_VERIFYING:   snprintf(out, n, "memverifikasi..."); break;
-    case OTA_ERROR:       snprintf(out, n, "gagal: %s", ota.msg); break;
-    default:              snprintf(out, n, "%s", ota.msg[0] ? ota.msg : (ota.lastCheckMs ? "terbaru" : "belum dicek")); break;
+    case OTA_DISABLED:    snprintf(out, n, "%s", tr("OTA belum diatur")); break;
+    case OTA_CHECKING:    snprintf(out, n, "%s", tr("memeriksa pembaruan...")); break;
+    case OTA_AVAILABLE:   snprintf(out, n, tr("tersedia v%s"), ota.latest); break;
+    case OTA_DOWNLOADING: snprintf(out, n, tr("mengunduh %u%%"), (unsigned)ota.progress); break;
+    case OTA_VERIFYING:   snprintf(out, n, "%s", tr("memverifikasi...")); break;
+    case OTA_ERROR:       snprintf(out, n, tr("gagal: %s"), tr(ota.msg)); break;
+    default:              snprintf(out, n, "%s", tr(ota.msg[0] ? ota.msg : (ota.lastCheckMs ? "terbaru" : "belum dicek"))); break;
   }
 }

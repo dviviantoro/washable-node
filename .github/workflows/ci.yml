@@ -23,6 +23,8 @@ jobs:
           key: pio-esp32-${{ hashFiles('esp32-kiosk/platformio.ini') }}
       - run: pip install platformio
       - run: pio run -d esp32-kiosk
+      - name: Cycle / relay logic checks (host simulation of the real UI code)
+        run: bash tools/sim/screenshots.sh test
   stm32-relay:
     runs-on: ubuntu-latest
     steps:
