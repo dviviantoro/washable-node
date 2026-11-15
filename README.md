@@ -10,6 +10,8 @@ shared/        code used by both firmwares        (relay_proto: CRC, framing, JS
 tests/         host tests that span both projects (run_host_tests.sh, integration/)
 docs/          relay-protocol.md                  the ESP32 <-> STM32 serial JSON protocol
 docs/img/      screenshots (docs/img/screens) and wiring / pinout drawings
+ota-server/    self-hosted OTA backend            (Node + SQLite, serves manifest.json / firmware.bin) -> ota-server/README.md
+ota-dashboard/ admin UI for it                    (Next.js, deployed on Vercel)      -> ota-dashboard/README.md
 tools/         release.py (kiosk release builder), stm32_sim.py (STM32 simulator),
                sim/ (renders the kiosk screens on a PC), diagrams/ (generates the SVG drawings)
 .github/       CI (build + tests) and the release workflows
@@ -60,6 +62,8 @@ The serial `#x` debug keys are compiled out of the firmware; for bench work only
 | `stm32-v0.2.0` | Relay controller firmware (`stm32-relay-0.2.0.bin`). Published with `--latest=false` so it can never become the repo's *latest* release. | `.github/workflows/stm32-release.yml` |
 
 Keep it that way: the kiosks' OTA URL always resolves to the *latest* release, so only `v*` kiosk releases may be "latest".
+
+**Self-hosted alternative to GitHub:** `ota-server` + `ota-dashboard` serve the same manifest/firmware protocol from your own machine (via a Cloudflare tunnel) and add a web UI to upload, publish and pause releases. Point a kiosk's OTA URL at `https://<tunnel-host>/ota/manifest.json` instead of the GitHub URL; no firmware change is needed.
 Every push and pull request runs `.github/workflows/ci.yml` (host tests, ESP32 build, STM32 build).
 
 ## Working on the protocol

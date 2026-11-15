@@ -1,0 +1,19 @@
+# systemd --user unit. Install:
+#   mkdir -p ~/.config/systemd/user && cp deploy/washable-ota.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now washable-ota
+# ExecStart pins the Node 22 binary (node:sqlite needs >= 22.13; /usr/bin/node here is v18). Edit the path if you move Node.
+# Keep it running after you log out (needs sudo once):  sudo loginctl enable-linger $USER
+[Unit]
+Description=Washable OTA firmware server
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Project/washable-node/ota-server
+ExecStart=/home/nvidia/.nvm/versions/node/v22.23.1/bin/node dist/main.js
+Restart=on-failure
+RestartSec=3
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

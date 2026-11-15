@@ -155,6 +155,7 @@ To make it real, replace the lookup, code check and points/coupon handling in th
 - Settings (NVS) are never touched by OTA; before each update they are written, read back and verified, and a checksummed copy lives in the SPIFFS partition (`/cfg.bak`) and is restored automatically if NVS is ever empty.
 - The repository must be **public** (or the device needs a token) for the kiosks to download releases. Set the manifest URL in the web form:
   `https://github.com/<owner>/<repo>/releases/latest/download/manifest.json` (or set `OTA_DEFAULT_URL` in `src/ota.h`). Empty = updates off.
+  Alternatively use the self-hosted server in [`../ota-server`](../ota-server/README.md) (with its dashboard in [`../ota-dashboard`](../ota-dashboard/README.md)): the URL is then `https://<your-tunnel-host>/ota/manifest.json`.
 - Not implemented yet: **firmware signing**. Add an ECDSA signature check before using this on machines in the field.
 
 ### Publishing a release
