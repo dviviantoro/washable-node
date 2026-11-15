@@ -15,6 +15,29 @@ export interface Release {
 
 export type EventKind = "manifest" | "firmware";
 
+export interface NodeRow {
+  device_id: string;
+  machine_id: string;
+  label: string;
+  fw_version: string;
+  first_seen: string;
+  last_seen: string;
+  last_beat: string;
+  last_ip: string;
+  health: string; // JSON of the last heartbeat (already sanitised)
+  boots: number;
+  target_release_id: number | null;
+  target_set_at: string;
+}
+
+export interface NodeLogRow {
+  id: number;
+  ts: string;
+  device_id: string;
+  kind: string;
+  detail: string;
+}
+
 export interface DeviceEvent {
   id: number;
   ts: string;
@@ -25,6 +48,7 @@ export interface DeviceEvent {
   status: number;
   bytes: number;
   complete: number;
+  device_id: string;
 }
 
 export class Store {
@@ -59,7 +83,31 @@ export class Store {
         complete       INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+      CREATE TABLE IF NOT EXISTS nodes (
+        device_id         TEXT PRIMARY KEY,
+        machine_id        TEXT NOT NULL DEFAULT '',
+        label             TEXT NOT NULL DEFAULT '',
+        fw_version        TEXT NOT NULL DEFAULT '',
+        first_seen        TEXT NOT NULL,
+        last_seen         TEXT NOT NULL,
+        last_beat         TEXT NOT NULL DEFAULT '',
+        last_ip           TEXT NOT NULL DEFAULT '',
+        health            TEXT NOT NULL DEFAULT '{}',
+        boots             INTEGER NOT NULL DEFAULT 0,
+        target_release_id INTEGER REFERENCES releases(id),
+        target_set_at     TEXT NOT NULL DEFAULT ''
+      );
+      CREATE TABLE IF NOT EXISTS node_log (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts        TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        kind      TEXT NOT NULL,
+        detail    TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS node_log_dev ON node_log(device_id, id);
     `);
+    const cols = this.db.prepare("PRAGMA table_info(events)").all() as unknown as { name: string }[];
+    if (!cols.some((c) => c.name === "device_id")) this.db.exec("ALTER TABLE events ADD COLUMN device_id TEXT NOT NULL DEFAULT ''");
   }
 
   listReleases(): Release[] {
@@ -86,21 +134,67 @@ export class Store {
     this.db.prepare("DELETE FROM releases WHERE id = ?").run(id);
   }
 
-  /** The release currently announced in manifest.json, or undefined (rollout paused). */
-  getActive(): Release | undefined {
-    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'active_release_id'").get() as { value: string } | undefined;
-    return row ? this.getRelease(Number(row.value)) : undefined;
+
+  // ------------------------------------------------------------------ nodes (kiosks that identify themselves)
+  listNodes(): NodeRow[] {
+    return this.db.prepare("SELECT * FROM nodes ORDER BY machine_id, device_id").all() as unknown as NodeRow[];
   }
 
-  setActive(id: number | null): void {
-    if (id === null) this.db.prepare("DELETE FROM settings WHERE key = 'active_release_id'").run();
-    else this.db.prepare("INSERT INTO settings (key, value) VALUES ('active_release_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(id));
+  getNode(id: string): NodeRow | undefined {
+    return this.db.prepare("SELECT * FROM nodes WHERE device_id = ?").get(id) as unknown as NodeRow | undefined;
   }
 
-  logEvent(e: Omit<DeviceEvent, "id" | "ts"> & { ts?: string }): void {
+  nodeCount(): number {
+    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM nodes").get() as { n: number }).n);
+  }
+
+  insertNode(id: string, machine: string, fw: string, ip: string): NodeRow {
+    const now = new Date().toISOString();
+    this.db.prepare("INSERT INTO nodes (device_id, machine_id, fw_version, first_seen, last_seen, last_ip) VALUES (?,?,?,?,?,?)").run(id, machine, fw, now, now, ip);
+    return this.getNode(id)!;
+  }
+
+  /** Apply a partial update to a node row. */
+  updateNode(id: string, patch: Partial<Omit<NodeRow, "device_id">>): void {
+    const keys = Object.keys(patch) as (keyof typeof patch)[];
+    if (!keys.length) return;
+    const sets = keys.map((k) => `${String(k)} = ?`).join(", ");
+    this.db.prepare(`UPDATE nodes SET ${sets} WHERE device_id = ?`).run(...(keys.map((k) => patch[k]) as (string | number | null)[]), id);
+  }
+
+  deleteNode(id: string): void {
+    this.db.prepare("DELETE FROM nodes WHERE device_id = ?").run(id);
+    this.db.prepare("DELETE FROM node_log WHERE device_id = ?").run(id);
+  }
+
+  setTarget(id: string, releaseId: number | null): void {
+    this.db.prepare("UPDATE nodes SET target_release_id = ?, target_set_at = ? WHERE device_id = ?").run(releaseId, releaseId === null ? "" : new Date().toISOString(), id);
+  }
+
+  nodesTargeting(releaseId: number): number {
+    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE target_release_id = ?").get(releaseId) as { n: number }).n);
+  }
+
+  logNode(deviceId: string, kind: string, detail = ""): void {
+    this.db.prepare("INSERT INTO node_log (ts, device_id, kind, detail) VALUES (?,?,?,?)").run(new Date().toISOString(), deviceId, kind, detail);
+  }
+
+  nodeLog(deviceId: string, limit: number): NodeLogRow[] {
+    return this.db.prepare("SELECT * FROM node_log WHERE device_id = ? ORDER BY id DESC LIMIT ?").all(deviceId, limit) as unknown as NodeLogRow[];
+  }
+
+  recentNodeLog(limit: number): NodeLogRow[] {
+    return this.db.prepare("SELECT * FROM node_log ORDER BY id DESC LIMIT ?").all(limit) as unknown as NodeLogRow[];
+  }
+
+  nodeEvents(deviceId: string, limit: number): DeviceEvent[] {
+    return this.db.prepare("SELECT * FROM events WHERE device_id = ? ORDER BY id DESC LIMIT ?").all(deviceId, limit) as unknown as DeviceEvent[];
+  }
+
+  logEvent(e: Omit<DeviceEvent, "id" | "ts" | "device_id"> & { ts?: string; device_id?: string }): void {
     this.db
-      .prepare("INSERT INTO events (ts, kind, ip, device_version, served_version, status, bytes, complete) VALUES (?,?,?,?,?,?,?,?)")
-      .run(e.ts ?? new Date().toISOString(), e.kind, e.ip, e.device_version, e.served_version, e.status, e.bytes, e.complete);
+      .prepare("INSERT INTO events (ts, kind, ip, device_version, served_version, status, bytes, complete, device_id) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(e.ts ?? new Date().toISOString(), e.kind, e.ip, e.device_version, e.served_version, e.status, e.bytes, e.complete, e.device_id ?? "");
   }
 
   listEvents(limit: number, kind?: EventKind): DeviceEvent[] {
@@ -130,6 +224,7 @@ export class Store {
   }
 
   pruneEvents(olderThanIso: string): number {
+    this.db.prepare("DELETE FROM node_log WHERE ts < ?").run(olderThanIso);
     return Number(this.db.prepare("DELETE FROM events WHERE ts < ?").run(olderThanIso).changes);
   }
 

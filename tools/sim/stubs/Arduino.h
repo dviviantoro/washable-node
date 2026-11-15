@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <math.h>
+#include <time.h>
 #include <string.h>
 #include <string>
 #include <map>
@@ -25,7 +27,10 @@ inline int digitalRead(int) { return 0; }
 inline void ledcSetup(int, int, int) {}
 inline void ledcAttachPin(int, int) {}
 inline void ledcWrite(int, int) {}
+// glibc >= 2.38 ships its own strlcpy (declared in <string.h>); older glibc / macOS-less hosts need this stand-in
+#if !(defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 38)))
 inline size_t strlcpy(char *d, const char *s, size_t n) { size_t l = strlen(s); if (n) { size_t c = l >= n ? n - 1 : l; memcpy(d, s, c); d[c] = 0; } return l; }
+#endif
 
 class String {
  public:

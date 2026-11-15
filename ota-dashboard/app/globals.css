@@ -146,3 +146,60 @@ td.actions { display: flex; gap: 6px; justify-content: flex-end; }
   .grid.two { grid-template-columns: 1fr; }
   .big { font-size: 28px; }
 }
+
+/* ---- tabs */
+.tabs { display: flex; gap: 2px; padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; position: sticky; top: 53px; z-index: 4; }
+.tabs button { appearance: none; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 10px 14px; font: inherit; cursor: pointer; white-space: nowrap; }
+.tabs button:hover { color: var(--text); }
+.tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.pill { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; background: var(--surface-2); color: var(--muted); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.page.wide { max-width: 1480px; }
+.grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.stat { display: grid; gap: 2px; }
+.ok-text { color: var(--ok); }
+.warn-text { color: var(--warn); }
+.pad { padding: 16px; }
+
+/* ---- nodes */
+select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; max-width: 100%; }
+tr.sel td { background: var(--surface-2); }
+button.link { appearance: none; border: 0; background: none; padding: 0; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; text-align: left; }
+button.link:hover { text-decoration: underline; }
+.assign { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.issues { margin: 0; padding-left: 28px; }
+.issuelist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.issuelist li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 360px; overflow-y: auto; }
+.timeline li { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 14px; }
+.timeline .muted { min-width: 84px; }
+
+/* ---- code editor + build */
+.studio { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 12px; height: 68vh; min-height: 420px; }
+.files { overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 6px; }
+.files .dir { padding: 6px 8px 2px; font-family: var(--mono); word-break: break-all; }
+.file { display: flex; align-items: center; justify-content: space-between; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text); padding: 5px 8px; border-radius: 6px; font: inherit; font-family: var(--mono); font-size: 13px; cursor: pointer; }
+.file:hover { background: var(--surface); }
+.file.on { background: var(--accent); color: var(--accent-text); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); display: inline-block; }
+.editor { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; min-width: 0; }
+.editor-box { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; min-height: 0; }
+.log { margin: 0; max-height: 360px; min-height: 120px; overflow: auto; padding: 10px 12px; border-radius: 10px; background: #0b1220; color: #d6e2f2; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); }
+.result { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.stack.tight { gap: 8px; }
+
+/* ---- kiosk preview */
+.preview { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.phone { padding: 14px; border-radius: 22px; background: #0b0f16; border: 2px solid var(--border); display: grid; gap: 8px; justify-items: center; }
+.phone canvas { display: block; touch-action: none; border-radius: 6px; image-rendering: auto; cursor: pointer; }
+.side { flex: 1; min-width: 260px; max-width: 520px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.relay { display: inline-grid; place-items: center; width: 22px; height: 22px; margin: 0 2px; border-radius: 6px; font-size: 12px; background: var(--surface-2); color: var(--muted); }
+.relay.on { background: var(--ok-bg); color: var(--ok); font-weight: 700; }
+
+@media (max-width: 760px) {
+  .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .studio { grid-template-columns: 1fr; height: auto; }
+  .files { max-height: 160px; }
+  .editor-box { height: 60vh; }
+}

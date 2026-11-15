@@ -17,6 +17,8 @@
 #endif
 #define OTA_CHECK_MS        (6UL * 3600UL * 1000UL)
 #define OTA_FIRST_CHECK_MS  (120UL * 1000UL)
+#define OTA_BEAT_MS         (5UL * 60UL * 1000UL)    // fleet heartbeat period (self-hosted server only)
+#define OTA_FIRST_BEAT_MS   (30UL * 1000UL)
 #define OTA_WINDOW_START    1     // install window, local hour [start, end)
 #define OTA_WINDOW_END      5
 #define OTA_TZ_SECONDS      (7 * 3600)   // WIB
@@ -31,6 +33,17 @@ struct OtaInfo {
   volatile uint32_t lastCheckMs;  // millis() of the last finished check (0 = never)
 };
 extern OtaInfo ota;
+
+// Facts the fleet dashboard shows (filled by main.cpp, sent by the heartbeat; only used with a self-hosted OTA server)
+struct OtaTelemetry {
+  char machine[8];                // machine id from the settings page
+  uint8_t relayOk;                // controller link up and greeted
+  uint8_t jobs;                   // bit0 wash running, bit1 dry running
+  uint8_t screen;                 // current screen number
+  char relayFw[16];               // controller firmware version
+  char relayRst[8];               // why the controller last restarted
+};
+extern OtaTelemetry otaTel;
 
 void otaBoot();                                   // first thing in setup(): rollback guard
 void otaHealthTick(uint32_t nowMs);               // call from loop(): marks the new image good after 60 s

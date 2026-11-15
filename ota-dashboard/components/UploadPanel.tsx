@@ -18,7 +18,6 @@ export function UploadPanel(props: {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [minVersion, setMinVersion] = useState("");
   const [notes, setNotes] = useState("");
-  const [activate, setActivate] = useState(true);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
@@ -50,8 +49,8 @@ export function UploadPanel(props: {
     setError(null);
     setProgress(0);
     try {
-      const r = await uploadRelease(token, file, { version: preview.version ?? "", min_version: minVersion.trim(), notes: notes.trim(), activate }, setProgress);
-      setOkMsg(`v${r.version} uploaded${r.active ? " and published to all kiosks" : ""}.`);
+      const r = await uploadRelease(token, file, { version: preview.version ?? "", min_version: minVersion.trim(), notes: notes.trim() }, setProgress);
+      setOkMsg(`v${r.version} uploaded. Pick the nodes that should get it on the Nodes tab.`);
       reset();
       onDone();
     } catch (err) {
@@ -117,10 +116,6 @@ export function UploadPanel(props: {
           <span>Release notes <em>(optional, stays on this server)</em></span>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} maxLength={500} />
         </label>
-        <label className="check">
-          <input type="checkbox" checked={activate} onChange={(e) => setActivate(e.target.checked)} />
-          Publish to all kiosks right away
-        </label>
 
         {progress !== null && (
           <div className="progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
@@ -130,7 +125,7 @@ export function UploadPanel(props: {
         {error && <p className="alert error" role="alert">{error}</p>}
         {okMsg && <p className="alert ok" role="status">{okMsg}</p>}
         <div className="row">
-          <button className="btn primary" disabled={!canUpload}>{progress !== null ? `Uploading ${progress}%` : activate ? "Upload and publish" : "Upload"}</button>
+          <button className="btn primary" disabled={!canUpload}>{progress !== null ? `Uploading ${progress}%` : "Upload"}</button>
           {file && progress === null && <button type="button" className="btn ghost" onClick={reset}>Clear</button>}
         </div>
       </form>

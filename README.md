@@ -63,7 +63,7 @@ The serial `#x` debug keys are compiled out of the firmware; for bench work only
 
 Keep it that way: the kiosks' OTA URL always resolves to the *latest* release, so only `v*` kiosk releases may be "latest".
 
-**Self-hosted alternative to GitHub:** `ota-server` + `ota-dashboard` serve the same manifest/firmware protocol from your own machine (via a Cloudflare tunnel) and add a web UI to upload, publish and pause releases. Point a kiosk's OTA URL at `https://<tunnel-host>/ota/manifest.json` instead of the GitHub URL; no firmware change is needed.
+**Self-hosted alternative to GitHub:** `ota-server` + `ota-dashboard` serve the same manifest/firmware protocol from your own machine (via a Cloudflare tunnel). The dashboard shows every kiosk (health, firmware, activity), sends a release to **chosen nodes only** (never a broadcast), and has a code editor, a PlatformIO build and a clickable kiosk preview. Point a kiosk's OTA URL at `https://<tunnel-host>/ota/manifest.json` instead of the GitHub URL. Node identity and heartbeats need firmware 1.3.0+ (flash once over USB).
 Every push and pull request runs `.github/workflows/ci.yml` (host tests, ESP32 build, STM32 build).
 
 ## Working on the protocol

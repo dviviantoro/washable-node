@@ -21,6 +21,7 @@ SPIFFSStub SPIFFS;
 std::map<std::string, std::string> g_nvs;
 uint8_t g_fb[320 * 480 * 3];
 OtaInfo ota;
+OtaTelemetry otaTel;
 RelayLink rl;
 RlHealth rh;
 

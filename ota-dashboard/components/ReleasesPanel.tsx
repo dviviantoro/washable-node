@@ -3,17 +3,23 @@
 import type { Release } from "@/lib/api";
 import { fmtAbs, fmtBytes } from "@/lib/format";
 
-export function ReleasesPanel({ releases, onActivate, onDelete }: { releases: Release[]; onActivate: (r: Release) => void; onDelete: (r: Release) => void }) {
+export function ReleasesPanel(props: {
+  releases: Release[];
+  onDeploy: (r: Release) => void;
+  onDownload: (r: Release) => void;
+  onDelete: (r: Release) => void;
+}) {
+  const { releases, onDeploy, onDownload, onDelete } = props;
   return (
     <section className="card stack">
       <h2>Releases</h2>
       {releases.length === 0 ? (
-        <p className="muted">No firmware uploaded yet.</p>
+        <p className="muted">No firmware yet. Upload a .bin below, or build one in the Code tab.</p>
       ) : (
         <div className="scroll">
           <table>
             <thead>
-              <tr><th>Version</th><th>Status</th><th className="num">Size</th><th>SHA-256</th><th>Min.</th><th>Uploaded</th><th /></tr>
+              <tr><th>Version</th><th>Assigned to</th><th className="num">Size</th><th>SHA-256</th><th>Min.</th><th>Added</th><th /></tr>
             </thead>
             <tbody>
               {releases.map((r) => (
@@ -22,14 +28,15 @@ export function ReleasesPanel({ releases, onActivate, onDelete }: { releases: Re
                     <span className="mono strong">v{r.version}</span>
                     {r.notes && <div className="muted small">{r.notes}</div>}
                   </td>
-                  <td>{r.active ? <span className="badge ok">Live</span> : <span className="badge">Stored</span>}</td>
+                  <td>{r.nodes ? <span className="badge warn">{r.nodes} node{r.nodes > 1 ? "s" : ""}</span> : <span className="badge">nobody</span>}</td>
                   <td className="num">{fmtBytes(r.size)}</td>
                   <td className="mono" title={r.sha256}>{r.sha256.slice(0, 10)}…</td>
                   <td>{r.min_version || "–"}</td>
                   <td>{fmtAbs(r.created_at)}</td>
                   <td className="actions">
-                    {!r.active && <button className="btn small" onClick={() => onActivate(r)}>Publish</button>}
-                    {!r.active && <button className="btn small danger" onClick={() => onDelete(r)}>Delete</button>}
+                    <button className="btn small primary" onClick={() => onDeploy(r)}>Send to nodes…</button>
+                    <button className="btn small" onClick={() => onDownload(r)}>Download</button>
+                    <button className="btn small danger" disabled={r.nodes > 0} title={r.nodes ? "Unassign it from the nodes first" : ""} onClick={() => onDelete(r)}>Delete</button>
                   </td>
                 </tr>
               ))}
@@ -38,7 +45,7 @@ export function ReleasesPanel({ releases, onActivate, onDelete }: { releases: Re
         </div>
       )}
       <p className="muted small">
-        Kiosks only install a version <b>newer</b> than the one they run. To roll back a bad release, build the previous code with a <b>higher</b> version number and publish that.
+        A release only reaches the nodes you pick on the Nodes tab. Kiosks install a version <b>newer</b> than the one they run, so to roll back a bad release, build the previous code with a <b>higher</b> version number.
       </p>
     </section>
   );

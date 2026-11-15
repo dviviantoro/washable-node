@@ -3193,6 +3193,12 @@ static void showScreen(Scr id) {
 static void appTick(lv_timer_t *) {
   uint32_t now = millis();
   jobsTick(now);                       // cycles keep running during screen swaps, payments, admin pages...
+  strlcpy(otaTel.machine, cfg.machineId, sizeof otaTel.machine);       // facts for the fleet dashboard heartbeat
+  otaTel.relayOk = rl.up && rl.helloOk;
+  otaTel.jobs = (jobs[0].st == JS_RUN ? 1 : 0) | (jobs[1].st == JS_RUN ? 2 : 0);
+  otaTel.screen = (uint8_t)curScr;
+  strlcpy(otaTel.relayFw, rl.fw, sizeof otaTel.relayFw);
+  strlcpy(otaTel.relayRst, rl.rst, sizeof otaTel.relayRst);
   if (busy) return;
   otaTick(now, WiFi.status() == WL_CONNECTED, curScr == SC_IDLE);
   static OtaState lastOs = OTA_IDLE;

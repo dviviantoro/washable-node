@@ -7,6 +7,7 @@
 #include <Update.h>
 #include <Preferences.h>
 #include <esp_ota_ops.h>
+#include <esp_system.h>
 #include <mbedtls/sha256.h>
 #include <time.h>
 
@@ -14,6 +15,7 @@
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
 
 OtaInfo ota = { OTA_DISABLED, 0, "", "", 0 };
+OtaTelemetry otaTel = {};
 
 static char gManifestUrl[160] = "";
 static char gFwUrl[200] = "";
@@ -21,6 +23,9 @@ static char gSha[65] = "";
 static uint32_t gSize = 0;
 static uint32_t nextCheckMs = OTA_FIRST_CHECK_MS;
 static uint8_t failCount = 0;
+static bool gFleet = false;                        // manifest URL is a self-hosted .../ota/manifest.json: identify this kiosk and send heartbeats
+static uint32_t nextBeatMs = OTA_FIRST_BEAT_MS;
+static volatile bool beatBusy = false;
 static bool ntpStarted = false, healthDone = false, pendingFlag = false, forceCheck = false;
 
 // ---------------------------------------------------------------- version helpers
@@ -66,6 +71,13 @@ static void setError(const char *m) {
   if (failCount < 3) failCount++;
 }
 
+// ---------------------------------------------------------------- identity
+static void deviceId(char out[13]) {               // factory MAC as 12 lowercase hex digits
+  uint64_t m = ESP.getEfuseMac();
+  snprintf(out, 13, "%02x%02x%02x%02x%02x%02x", (unsigned)(m & 0xff), (unsigned)((m >> 8) & 0xff), (unsigned)((m >> 16) & 0xff),
+           (unsigned)((m >> 24) & 0xff), (unsigned)((m >> 32) & 0xff), (unsigned)((m >> 40) & 0xff));
+}
+
 // ---------------------------------------------------------------- HTTP open (TLS with CA bundle, redirects)
 static bool httpBegin(HTTPClient &http, WiFiClientSecure &sc, WiFiClient &pc, const char *url) {
   if (!strncmp(url, "https://", 8)) {
@@ -83,6 +95,12 @@ static bool httpBegin(HTTPClient &http, WiFiClientSecure &sc, WiFiClient &pc, co
   http.setTimeout(15000);
   http.setReuse(false);
   http.setUserAgent("washable-ota/" FW_VERSION);
+  if (gFleet) {                                    // lets the server see this kiosk and decide which release it may get
+    char id[13]; deviceId(id);
+    http.addHeader("X-Device-Id", id);
+    http.addHeader("X-Machine-Id", otaTel.machine);
+    http.addHeader("X-FW-Version", FW_VERSION);
+  }
   return true;
 }
 
@@ -139,6 +157,32 @@ static void checkTask(void *) {
   strlcpy(gSha, sha, sizeof gSha);
   gSize = size;
   ota.state = OTA_AVAILABLE;
+  vTaskDelete(NULL);
+}
+
+// ---------------------------------------------------------------- heartbeat (fleet dashboard)
+static void beatTask(void *) {
+  char url[sizeof gManifestUrl + 8];
+  strlcpy(url, gManifestUrl, sizeof url);
+  char *slash = strrchr(url, '/');
+  if (slash && (size_t)(slash - url) + 10 < sizeof url) {
+    strcpy(slash + 1, "heartbeat");
+    WiFiClientSecure sc;
+    WiFiClient pc;
+    HTTPClient http;
+    if (httpBegin(http, sc, pc, url)) {
+      char body[300];
+      snprintf(body, sizeof body,
+               "{\"fw\":\"%s\",\"up\":%lu,\"heap\":%lu,\"maxblk\":%lu,\"rssi\":%d,\"rst\":%d,\"relay\":%u,\"relayfw\":\"%s\",\"relayrst\":\"%s\",\"jobs\":%u,\"scr\":%u,\"ota\":%u,\"latest\":\"%s\"}",
+               FW_VERSION, (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+               (int)WiFi.RSSI(), (int)esp_reset_reason(), (unsigned)otaTel.relayOk, otaTel.relayFw, otaTel.relayRst,
+               (unsigned)otaTel.jobs, (unsigned)otaTel.screen, (unsigned)ota.state, ota.latest);
+      http.addHeader("Content-Type", "application/json");
+      http.POST((uint8_t *)body, strlen(body));
+      http.end();
+    }
+  }
+  beatBusy = false;
   vTaskDelete(NULL);
 }
 
@@ -252,6 +296,8 @@ void otaHealthTick(uint32_t nowMs) {
 
 void otaConfigure(const char *url) {
   strlcpy(gManifestUrl, url ? url : "", sizeof gManifestUrl);
+  size_t ul = strlen(gManifestUrl), sl = strlen("/ota/manifest.json");
+  gFleet = ul > sl && !strcmp(gManifestUrl + ul - sl, "/ota/manifest.json");
   if (!gManifestUrl[0]) { ota.state = OTA_DISABLED; strlcpy(ota.msg, "URL belum diatur", sizeof ota.msg); }
   else if (ota.state == OTA_DISABLED) { ota.state = OTA_IDLE; ota.msg[0] = 0; }
 }
@@ -264,6 +310,12 @@ void otaTick(uint32_t nowMs, bool wifiUp, bool canCheck) {
     ntpStarted = true;
   }
   if (!gManifestUrl[0]) return;
+  if (gFleet && wifiUp && !beatBusy && nowMs >= nextBeatMs && ota.state != OTA_CHECKING && ota.state != OTA_DOWNLOADING && ota.state != OTA_VERIFYING &&
+      ESP.getMaxAllocHeap() >= 60000) {
+    beatBusy = true;
+    nextBeatMs = nowMs + OTA_BEAT_MS;
+    xTaskCreatePinnedToCore(beatTask, "ota_beat", 10240, NULL, 1, NULL, 0);
+  }
   if (ota.state == OTA_ERROR || ota.state == OTA_IDLE) {
     bool due = forceCheck || (nowMs >= nextCheckMs);
     if (due && wifiUp && canCheck && ota.state != OTA_CHECKING) {

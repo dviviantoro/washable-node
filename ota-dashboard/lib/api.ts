@@ -9,7 +9,8 @@ export interface Release {
   notes: string;
   filename: string;
   created_at: string;
-  active: boolean;
+  /** How many nodes are currently assigned this release. */
+  nodes: number;
 }
 export interface VersionStat {
   version: string;
@@ -25,10 +26,9 @@ export interface DailyStat {
 export interface Status {
   serverVersion: string;
   manifestUrl: string;
-  active: Release | null;
-  paused: boolean;
   releaseCount: number;
   limits: { maxBytes: number; minBytes: number };
+  nodes: { total: number; online: number; attention: number; offline: number; pendingUpdates: number };
   versions24h: VersionStat[];
   versions7d: VersionStat[];
   daily: DailyStat[];
@@ -43,6 +43,82 @@ export interface DeviceEvent {
   status: number;
   bytes: number;
   complete: number;
+  device_id: string;
+}
+
+export interface NodeHealth {
+  fw: string;
+  up: number;
+  heap: number;
+  maxblk: number;
+  rssi: number;
+  rst: number;
+  relay: boolean;
+  relayfw: string;
+  relayrst: string;
+  jobs: number;
+  scr: number;
+  ota: number;
+  latest: string;
+  resetReason: string;
+  screen: string;
+  activity: string;
+  otaState: string;
+}
+export interface NodeInfo {
+  deviceId: string;
+  machineId: string;
+  label: string;
+  fwVersion: string;
+  firstSeen: string;
+  lastSeen: string;
+  lastBeat: string;
+  lastIp: string;
+  boots: number;
+  online: boolean;
+  level: "ok" | "warn" | "bad" | "offline";
+  issues: string[];
+  health: NodeHealth | null;
+  target: { releaseId: number; version: string; setAt: string } | null;
+  update: "none" | "pending" | "done";
+}
+export interface NodeLog {
+  id: number;
+  ts: string;
+  device_id: string;
+  kind: string;
+  detail: string;
+  name?: string;
+}
+export interface NodeDetail {
+  node: NodeInfo;
+  log: NodeLog[];
+  events: DeviceEvent[];
+}
+
+export interface FileEntry {
+  path: string;
+  size: number;
+  modified: boolean;
+}
+export type JobStatus = "running" | "ok" | "failed" | "canceled";
+export interface JobInfo {
+  id: string;
+  kind: "firmware" | "preview";
+  status: JobStatus;
+  startedAt: string;
+  finishedAt: string;
+  exitCode: number | null;
+  result: Record<string, unknown> | null;
+  error: string;
+}
+export interface StudioStatus {
+  toolchain: { pio: boolean; emsdk: boolean };
+  workspaceSeeded: boolean;
+  busy: JobInfo | null;
+  lastFirmwareJob: JobInfo | null;
+  lastPreviewJob: JobInfo | null;
+  preview: { builtAt: string; size: number; version: string } | null;
 }
 
 export class ApiError extends Error {
@@ -99,7 +175,7 @@ export async function api<T>(path: string, token: string | null, init: RequestIn
 export function uploadRelease(
   token: string,
   file: File,
-  fields: { version: string; min_version: string; notes: string; activate: boolean },
+  fields: { version: string; min_version: string; notes: string },
   onProgress: (pct: number) => void,
 ): Promise<Release> {
   return new Promise((resolve, reject) => {
@@ -108,7 +184,6 @@ export function uploadRelease(
     form.append("version", fields.version);
     form.append("min_version", fields.min_version);
     form.append("notes", fields.notes);
-    form.append("activate", fields.activate ? "true" : "false");
     form.append("file", file, "firmware.bin");
     const xhr = new XMLHttpRequest();
     xhr.open("POST", API_URL + "/api/releases");
@@ -127,4 +202,16 @@ export function uploadRelease(
     };
     xhr.send(form);
   });
+}
+
+/** Download an authenticated file (the API needs the bearer token, so a plain link will not do). */
+export async function downloadFile(token: string, path: string, filename: string): Promise<void> {
+  const res = await fetch(API_URL + path, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (!res.ok) throw await errorFrom(res);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }

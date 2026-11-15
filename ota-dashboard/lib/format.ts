@@ -28,3 +28,10 @@ export function cmpVer(a: string, b: string): number {
   }
   return 0;
 }
+
+export function fmtUptime(sec: number): string {
+  if (sec < 90) return `${sec}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)} min`;
+  if (sec < 172800) return `${(sec / 3600).toFixed(1)} h`;
+  return `${(sec / 86400).toFixed(1)} d`;
+}

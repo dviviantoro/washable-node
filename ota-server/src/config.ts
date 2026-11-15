@@ -16,6 +16,12 @@ export interface Config {
   minFirmwareBytes: number;
   eventRetentionDays: number;
   tokenTtl: string;
+  /** Git checkout the code editor's working copy is seeded from (contains esp32-kiosk/, shared/, tools/sim/). */
+  repoDir: string;
+  /** PlatformIO CLI used by the firmware build. */
+  pioBin: string;
+  /** emsdk checkout used to compile the interactive kiosk preview to WebAssembly. */
+  emsdkDir: string;
 }
 
 export const OTA_SLOT_BYTES = 0x1e0000; // min_spiffs.csv: two 1,966,080 byte app slots
@@ -31,10 +37,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (jwtSecret.length < 32) throw new Error("JWT_SECRET must be at least 32 characters");
   const adminPassword = need("ADMIN_PASSWORD");
   if (adminPassword.length < 8) throw new Error("ADMIN_PASSWORD must be at least 8 characters");
+  const dataDir = path.resolve(env.DATA_DIR ?? "./data");
   return {
     host: env.HOST ?? "127.0.0.1",
     port: Number(env.PORT ?? 8787),
-    dataDir: path.resolve(env.DATA_DIR ?? "./data"),
+    dataDir,
     adminPassword,
     jwtSecret,
     allowedOrigins: (env.ALLOWED_ORIGINS ?? "")
@@ -46,6 +53,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     minFirmwareBytes: MIN_FIRMWARE_BYTES,
     eventRetentionDays: Number(env.EVENT_RETENTION_DAYS ?? 90),
     tokenTtl: env.TOKEN_TTL ?? "12h",
+    repoDir: path.resolve(env.REPO_DIR ?? path.join(process.cwd(), "..")),
+    pioBin: env.PIO_BIN ?? path.join(dataDir, "tools", "pio-venv", "bin", "pio"),
+    emsdkDir: env.EMSDK_DIR ?? path.join(dataDir, "tools", "emsdk"),
   };
 }
 

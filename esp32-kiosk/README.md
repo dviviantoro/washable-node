@@ -156,6 +156,7 @@ To make it real, replace the lookup, code check and points/coupon handling in th
 - The repository must be **public** (or the device needs a token) for the kiosks to download releases. Set the manifest URL in the web form:
   `https://github.com/<owner>/<repo>/releases/latest/download/manifest.json` (or set `OTA_DEFAULT_URL` in `src/ota.h`). Empty = updates off.
   Alternatively use the self-hosted server in [`../ota-server`](../ota-server/README.md) (with its dashboard in [`../ota-dashboard`](../ota-dashboard/README.md)): the URL is then `https://<your-tunnel-host>/ota/manifest.json`.
+  **Fleet mode:** when the URL ends in `/ota/manifest.json` (the self-hosted server), the kiosk also sends `X-Device-Id` (factory MAC), `X-Machine-Id` and `X-FW-Version` headers with every OTA request and a **heartbeat** (`POST .../ota/heartbeat`, every 5 minutes, about 300 bytes of JSON: firmware, uptime, free heap, Wi-Fi RSSI, reset reason, controller link, running cycles, current screen, OTA state). The server then offers firmware only to the nodes an admin picked, and the dashboard shows each node's health. No headers or heartbeats are sent to GitHub or any other URL. Needs firmware 1.3.0+; kiosks on older firmware must be flashed once over USB to join the fleet.
 - Not implemented yet: **firmware signing**. Add an ECDSA signature check before using this on machines in the field.
 
 ### Publishing a release
