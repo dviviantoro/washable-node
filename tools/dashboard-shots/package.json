@@ -1,0 +1,13 @@
+{
+  "name": "washable-dashboard-shots",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Regenerates the OTA dashboard screenshots in docs/img/dashboard (see run.sh)",
+  "type": "module",
+  "scripts": {
+    "shots": "bash run.sh"
+  },
+  "dependencies": {
+    "playwright-core": "1.60.0"
+  }
+}

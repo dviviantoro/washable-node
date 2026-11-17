@@ -1,0 +1,249 @@
+{
+ "pages": [
+  {
+   "id": "01-login",
+   "title": "Sign-in page",
+   "spec": "A centred card titled 'Washable OTA' with the subtitle 'Firmware releases for the laundry kiosks.', a password field labelled 'Admin password', a (disabled, because the field is empty) 'Sign in' button and a small line 'Server: ota.example.com'. No error message."
+  },
+  {
+   "id": "02-login-error",
+   "title": "Sign-in page after a wrong password",
+   "spec": "The same sign-in card, now with a red/pink alert 'Wrong password' above the button, the password field still filled (dots), the button enabled."
+  },
+  {
+   "id": "03-overview",
+   "title": "Overview tab",
+   "spec": "Top bar (logo, 'Washable OTA', 'server v2.0.0', Sign out) and a tab bar (Overview, Nodes with a pill like 6/8, Releases, Code & build, Kiosk preview, Activity) with Overview active. Four stat tiles: Nodes 8, Online 6, Need attention 2, Updates pending 1 (assigned-but-not-installed; numbers must be consistent with the Fleet list). A 'Fleet' card listing the problem nodes (Kost Mawar problem, Kampus Barat attention, Apartemen Hijau offline, Pasar Baru offline) with their issues, and a 'Kiosk OTA URL' card with the URL https://ota.example.com/ota/manifest.json, a Copy button and explanatory text."
+  },
+  {
+   "id": "04-nodes",
+   "title": "Nodes tab (fleet table)",
+   "spec": "A 'Nodes' card with version chips (e.g. '3x v1.1.0', '5x v1.2.0') and a table of 8 kiosks with columns Node, Status, Firmware, Update, Activity, Wi-Fi, Up, Last seen and a select-all checkbox. Rows (sorted by machine): Mesin 02, Warung Budi, Laundry Melati, Kost Mawar (Problem), Pasar Baru (Offline, '-> v1.2.0 pending'), Ruko Sentosa (Healthy, 'v1.2.0 installed'), Kampus Barat (Attention), Apartemen Hijau (Offline). Below the table an assign bar: '0 selected', a release dropdown, disabled 'Send to selected' and 'Cancel pending update' buttons and the note that nothing is sent to every kiosk at once. On a phone the table may scroll horizontally inside its card but the page itself must not."
+  },
+  {
+   "id": "05-node-healthy",
+   "title": "Node detail: healthy node",
+   "spec": "The nodes table plus, under it, a detail card for 'Warung Budi' with a green Healthy badge, two key/value lists (device id a1b2c3d4e5f6, machine 03, firmware v1.2.0, first seen, last contact, restarts; screen, activity 'wash cycle running', uptime, last reset, Wi-Fi signal, memory, relay controller, OTA client), a label input with 'Save label' and 'Forget node' buttons, and a 'Timeline' list of events with small coloured badges."
+  },
+  {
+   "id": "06-node-problem",
+   "title": "Node detail: problem node",
+   "spec": "Detail card for 'Kost Mawar' with a red Problem badge and a yellow warning list of issues (relay controller not responding, weak Wi-Fi, low memory, restarted after task watchdog, last OTA check or install failed), key/value lists with 'not responding' for the relay controller, and a timeline containing red 'crash' / 'download-failed' badges."
+  },
+  {
+   "id": "07-nodes-skipped",
+   "title": "Nodes tab after sending a release to three ticked nodes, one of which is skipped",
+   "spec": "Three rows were ticked (Warung Budi, Kost Mawar, Kampus Barat) and v1.2.0 was sent. Expect a yellow alert like '2 assigned, 1 skipped - Warung Budi: runs 1.2.0; kiosks refuse to downgrade or reinstall'. Kost Mawar and Kampus Barat now show '-> v1.2.0 pending' in the Update column."
+  },
+  {
+   "id": "08-nodes-selected",
+   "title": "Nodes tab with two nodes ticked and release v1.3.0 chosen",
+   "spec": "Rows Warung Budi and Laundry Melati ticked, the assign bar shows '2 selected', the dropdown shows v1.3.0, 'Send to selected' enabled."
+  },
+  {
+   "id": "09-nodes-assigned",
+   "title": "Nodes tab right after assigning v1.3.0 to two nodes",
+   "spec": "A green alert 'v1.3.0 assigned to 2 nodes. They pick it up on their next check.', the two nodes show '-> v1.3.0 pending', the selection is cleared."
+  },
+  {
+   "id": "10-releases",
+   "title": "Releases tab",
+   "spec": "A 'Releases' card with a table (Version with notes, Assigned to as 'N nodes' / 'nobody' badges, Size, SHA-256 prefix, Min., Added, and buttons 'Send to nodes...', 'Download', 'Delete' (disabled while nodes are assigned)). Releases present: v1.2.0 and v1.1.0, plus v1.3.0 when the live build was part of the run. Below it an 'Upload firmware' card with a dashed drop zone."
+  },
+  {
+   "id": "11-releases-upload",
+   "title": "Releases tab with a valid firmware file picked for upload",
+   "spec": "The upload card shows the chosen file name and size, a list of green check marks (size within the OTA slot, ESP32 app image header, classic ESP32, checksum intact, 'Contains the OTA client, firmware version 1.4.0'), the SHA-256, Version v1.4.0 (disabled field), Minimum version 1.2.0, release notes text, and an enabled 'Upload' button."
+  },
+  {
+   "id": "12-releases-upload-invalid",
+   "title": "Releases tab with an invalid firmware file picked",
+   "spec": "A red cross item 'OTA client marker not found' among otherwise green checks, version field empty, 'Upload' button disabled (greyed)."
+  },
+  {
+   "id": "13-code-editor",
+   "title": "Code & build tab: editor",
+   "spec": "A 'Firmware source' card with a hint paragraph, a file list on the left (esp32-kiosk/src/ ... main.cpp selected, ..., version.h with a small orange dot meaning changed; shared/relay_proto/relay_proto.h) and a Monaco code editor showing main.cpp with syntax highlighting and line numbers, a toolbar ('Diff vs repo' checkbox, 'Revert file', 'Save (Ctrl+S)' disabled) and above it 'N file changed from the repo' with 'Download patch' / 'Reset all'. Below: a 'Build with PlatformIO' card with a 'Build firmware' button. The editor must be readable in dark theme (dark editor) and light theme (light editor). On a phone the file list stacks above the editor."
+  },
+  {
+   "id": "14-code-building",
+   "title": "Code & build tab while a build is running",
+   "spec": "The Build card shows a disabled 'Building...' button, a 'Build log' heading with a yellow 'Running...' badge and a Cancel button, and a dark log box streaming PlatformIO output ('Compiling .pio/build/...'). Taken in the middle of a real build."
+  },
+  {
+   "id": "15-code-built",
+   "title": "Code & build tab after a successful build",
+   "spec": "Build log badge 'Succeeded' (green) and below the log a result box: 'firmware.bin v1.3.0 <size> <sha prefix>', two inputs (release notes, minimum version), a primary button 'Add v1.3.0 to releases' and a 'Download .bin' button."
+  },
+  {
+   "id": "16-code-diff",
+   "title": "Code & build tab: diff view of version.h",
+   "spec": "The 'Diff vs repo' checkbox is ticked and the editor shows an inline diff of esp32-kiosk/src/version.h: the old line #define FW_VERSION \"1.1.0\" removed (red) and the new \"1.3.0\" added (green)."
+  },
+  {
+   "id": "17-preview-not-built",
+   "title": "Kiosk preview tab before the first build",
+   "spec": "A 'Kiosk preview' card with a blue 'Build preview' button, an explanation paragraph, and a yellow notice 'No preview yet. Press Build preview ...'. No phone image."
+  },
+  {
+   "id": "18-preview-idle",
+   "title": "Kiosk preview tab: idle kiosk screen",
+   "spec": "A phone-like frame with the kiosk's idle screen (washable wordmark and logo, 'Cucian kotor? Gampang.', a 'Sentuh untuk mulai' button, dark blue theme), to its right a 'Jump to screen' list of buttons (about 32 kiosk pages), segmented controls Bahasa/English, Dark/Light, size 1x/1.5x/2x, 'Skip 5 min of the running cycle' and 'Restart kiosk' buttons, and the relay indicator row 1-8. On a phone the frame must scale down to fit (no horizontal overflow)."
+  },
+  {
+   "id": "19-preview-payment",
+   "title": "Kiosk preview tab: payment (QRIS) page",
+   "spec": "Same layout as the idle preview but the kiosk shows the payment page with a QR code and amount / countdown."
+  },
+  {
+   "id": "20-preview-running",
+   "title": "Kiosk preview tab: wash cycle running",
+   "spec": "The kiosk shows the running-cycle page (progress ring or bar, remaining time, wash programme). Relay indicator 2 should be highlighted (green) because the wash relay is on."
+  },
+  {
+   "id": "21-preview-english-light",
+   "title": "Kiosk preview tab: English, light kiosk theme, service list",
+   "spec": "The kiosk shows the service list ('What would you like to do?', Wash / Dry cards) in English on a LIGHT kiosk theme; the Light and English segmented buttons are active."
+  },
+  {
+   "id": "22-activity",
+   "title": "Activity tab",
+   "spec": "A 'Node timeline' card listing recent events across the fleet (node name in bold, a small badge such as crash / reboot / firmware / assigned / download / relay / activity, text), then a 'Requests' card with a filter (All / Checks / Downloads) and a table (When, Node, Event, Kiosk runs, Server offered, Result, Source IP) with made-up documentation IP addresses."
+  },
+  {
+   "id": "23-activity-downloads",
+   "title": "Activity tab filtered to downloads",
+   "spec": "Same as the Activity tab, but the Requests table only lists 'Firmware download' rows with Complete / Interrupted result badges, and the 'Downloads' filter button is active."
+  }
+ ],
+ "kiosk": [
+  {
+   "name": "Idle",
+   "expect": "idle/attract page: washable wordmark, big logo, tagline, start pill, owner line"
+  },
+  {
+   "name": "Idle menu",
+   "expect": "idle page with a dropdown menu open over it"
+  },
+  {
+   "name": "Service list",
+   "expect": "choose Wash or Dry (two big cards with prices)"
+  },
+  {
+   "name": "Wash options",
+   "expect": "wash programmes (Hemat / Reguler / Intensif) with price, temperature, duration"
+  },
+  {
+   "name": "Dryer options",
+   "expect": "dry programmes (Hangat / Standar / Kering total)"
+  },
+  {
+   "name": "Payment (QRIS)",
+   "expect": "QR code to pay, amount, countdown"
+  },
+  {
+   "name": "Payment done",
+   "expect": "payment success confirmation"
+  },
+  {
+   "name": "Wash running",
+   "expect": "running wash cycle with progress and remaining time"
+  },
+  {
+   "name": "Dry running",
+   "expect": "running dry cycle with progress and remaining time"
+  },
+  {
+   "name": "Cycle finished",
+   "expect": "finished page (done, take your laundry)"
+  },
+  {
+   "name": "Idle, both running",
+   "expect": "idle page with indicators that both machines are running"
+  },
+  {
+   "name": "Member sign-in",
+   "expect": "ask whether the customer is a member"
+  },
+  {
+   "name": "Member phone",
+   "expect": "phone number entry keypad with the digits 81234567890"
+  },
+  {
+   "name": "Member check",
+   "expect": "checking the number / sending a code"
+  },
+  {
+   "name": "Member code",
+   "expect": "OTP code entry"
+  },
+  {
+   "name": "Member home",
+   "expect": "member home with points"
+  },
+  {
+   "name": "Admin PIN",
+   "expect": "PIN keypad"
+  },
+  {
+   "name": "Settings",
+   "expect": "settings list (owner, Wi-Fi, brightness, language, theme, ...)"
+  },
+  {
+   "name": "Wi-Fi setup",
+   "expect": "Wi-Fi setup page"
+  },
+  {
+   "name": "Wi-Fi networks",
+   "expect": "list of scanned Wi-Fi networks"
+  },
+  {
+   "name": "Text editor",
+   "expect": "on-screen keyboard editing the owner name"
+  },
+  {
+   "name": "Relay test",
+   "expect": "relay controller test page with 8 channels"
+  },
+  {
+   "name": "Device info 1",
+   "expect": "device info: owner and machine cards (top of a scrolling page)"
+  },
+  {
+   "name": "Device info 2",
+   "expect": "device info scrolled: network / firmware cards"
+  },
+  {
+   "name": "Device info 3",
+   "expect": "device info scrolled: relay controller card"
+  },
+  {
+   "name": "Device info 4",
+   "expect": "device info scrolled to the end: cycles and system cards"
+  },
+  {
+   "name": "Web form",
+   "expect": "page showing the PC web form address"
+  },
+  {
+   "name": "Health: healthy",
+   "expect": "relay controller health check, all green"
+  },
+  {
+   "name": "Health: attention",
+   "expect": "health check with warnings (watchdog reset, lost pings)"
+  },
+  {
+   "name": "Health: failure",
+   "expect": "health check failure: controller not reachable"
+  },
+  {
+   "name": "Firmware update",
+   "expect": "firmware update page downloading 62 percent to a newer version"
+  },
+  {
+   "name": "About",
+   "expect": "about page with version"
+  }
+ ]
+}

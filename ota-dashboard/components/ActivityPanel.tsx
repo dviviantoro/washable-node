@@ -14,7 +14,7 @@ export function ActivityPanel({ events, activity, nodes }: { events: DeviceEvent
     <section className="card stack">
       <h2>Node timeline</h2>
       {activity.length === 0 ? <p className="muted">Nothing yet.</p> : (
-        <ul className="timeline">
+        <ul className="timeline named">
           {activity.slice(0, 80).map((l) => (
             <li key={l.id}>
               <span className="muted small" title={fmtAbs(l.ts)}>{fmtAgo(l.ts)}</span>
@@ -40,7 +40,7 @@ export function ActivityPanel({ events, activity, nodes }: { events: DeviceEvent
       {rows.length === 0 ? (
         <p className="muted">No requests yet.</p>
       ) : (
-        <div className="scroll">
+        <div className="scroll tall">
           <table>
             <thead>
               <tr><th>When</th><th>Node</th><th>Event</th><th>Kiosk runs</th><th>Server offered</th><th>Result</th><th>Source IP</th></tr>

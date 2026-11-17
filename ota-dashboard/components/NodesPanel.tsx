@@ -110,8 +110,8 @@ export function NodesPanel(props: {
             No kiosk has reported in yet. A kiosk appears here after it contacts this server with its device ID, which needs firmware ≥ 1.3.0 (telemetry) and this server’s URL in its OTA setting.
           </p>
         ) : (
-          <div className="scroll">
-            <table>
+          <div className="scroll flat">
+            <table className="cards">
               <thead>
                 <tr>
                   <th><input type="checkbox" aria-label="Select all" checked={selected.size === nodes.length} onChange={(e) => setSelected(e.target.checked ? new Set(allIds) : new Set())} /></th>
@@ -121,18 +121,18 @@ export function NodesPanel(props: {
               <tbody>
                 {nodes.map((n) => (
                   <tr key={n.deviceId} className={detailId === n.deviceId ? "sel" : ""}>
-                    <td><input type="checkbox" aria-label={`Select ${nodeName(n)}`} checked={selected.has(n.deviceId)} onChange={() => toggle(n.deviceId)} /></td>
-                    <td>
+                    <td className="sel"><input type="checkbox" aria-label={`Select ${nodeName(n)}`} checked={selected.has(n.deviceId)} onChange={() => toggle(n.deviceId)} /></td>
+                    <td className="node">
                       <button className="link" onClick={() => setDetailId(detailId === n.deviceId ? null : n.deviceId)}>{nodeName(n)}</button>
                       <div className="muted small mono">{n.deviceId}</div>
                     </td>
-                    <td><StateBadge n={n} /></td>
-                    <td className="mono">{n.fwVersion ? `v${n.fwVersion}` : "–"}</td>
-                    <td><UpdateCell n={n} /></td>
-                    <td>{n.online && n.health ? <>{n.health.activity}<div className="muted small">{n.health.screen}</div></> : <span className="muted">–</span>}</td>
-                    <td>{n.online && n.health ? `${n.health.rssi} dBm` : "–"}</td>
-                    <td>{n.online && n.health ? fmtUptime(n.health.up) : "–"}</td>
-                    <td title={fmtAbs(n.lastSeen)}>{fmtAgo(n.lastBeat || n.lastSeen)}</td>
+                    <td data-label="Status"><StateBadge n={n} /></td>
+                    <td className="mono" data-label="Firmware">{n.fwVersion ? `v${n.fwVersion}` : "–"}</td>
+                    <td data-label="Update"><UpdateCell n={n} /></td>
+                    <td data-label="Activity"><div>{n.online && n.health ? <>{n.health.activity}<div className="muted small">{n.health.screen}</div></> : <span className="muted">–</span>}</div></td>
+                    <td data-label="Wi-Fi">{n.online && n.health ? `${n.health.rssi} dBm` : "–"}</td>
+                    <td data-label="Up">{n.online && n.health ? fmtUptime(n.health.up) : "–"}</td>
+                    <td data-label="Last seen" title={fmtAbs(n.lastSeen)}>{fmtAgo(n.lastBeat || n.lastSeen)}</td>
                   </tr>
                 ))}
               </tbody>

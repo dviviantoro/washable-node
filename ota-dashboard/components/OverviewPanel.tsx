@@ -42,8 +42,10 @@ export function OverviewPanel({ status, nodes, onOpenNodes }: { status: Status; 
             <ul className="issuelist">
               {nodes.filter((x) => !x.online || x.level !== "ok").map((x) => (
                 <li key={x.deviceId}>
-                  <strong>{x.label || (x.machineId ? `Mesin ${x.machineId}` : x.deviceId)}</strong>
-                  <span className={`badge ${!x.online ? "" : x.level === "bad" ? "bad" : "warn"}`}>{!x.online ? "offline" : x.level}</span>
+                  <div className="row">
+                    <strong>{x.label || (x.machineId ? `Mesin ${x.machineId}` : x.deviceId)}</strong>
+                    <span className={`badge ${!x.online ? "" : x.level === "bad" ? "bad" : "warn"}`}>{!x.online ? "Offline" : x.level === "bad" ? "Problem" : "Attention"}</span>
+                  </div>
                   <span className="muted small">{x.issues.join("; ")}{!x.online ? ` (last seen ${fmtAgo(x.lastBeat || x.lastSeen)})` : ""}</span>
                 </li>
               ))}

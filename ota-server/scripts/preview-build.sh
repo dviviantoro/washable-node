@@ -50,5 +50,5 @@ em++ -O2 "$OUT/web_main.o" "$OBJ"/*.o -o "$OUT/sim.js" \
   -sEXPORTED_FUNCTIONS=_sim_init,_sim_frame,_sim_pixels,_sim_touch,_sim_screen,_sim_relays,_sim_scene_count,_sim_scene_name,_sim_fw_version,_sim_skip,_sim_scene \
   -sEXPORTED_RUNTIME_METHODS=UTF8ToString,HEAPU8,HEAPU32
 rm -f "$OUT/web_main.o"
-ls -l "$OUT/sim.js"
+echo "sim.js: $(wc -c < "$OUT/sim.js") bytes"
 echo "== done"

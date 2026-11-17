@@ -33,6 +33,27 @@ npm install
 NEXT_PUBLIC_API_URL=http://localhost:8787 npm run dev      # http://localhost:3000, allowed by the backend's default ALLOWED_ORIGINS
 ```
 
+## Screenshots
+
+Every page in four setups (desktop and phone, light and dark theme), plus every kiosk page rendered through the Kiosk preview, is in [`docs/img/dashboard`](../docs/img/dashboard/README.md) (all data is made up). A few of them:
+
+<table>
+<tr>
+<td><a href="../docs/img/dashboard/desktop-light/03-overview.png"><img src="../docs/img/dashboard/desktop-light/03-overview.png" width="440"></a><br><sub>Overview</sub></td>
+<td><a href="../docs/img/dashboard/desktop-light/04-nodes.png"><img src="../docs/img/dashboard/desktop-light/04-nodes.png" width="440"></a><br><sub>Nodes: status, firmware, activity, Wi-Fi; tick nodes to send a release</sub></td>
+</tr>
+<tr>
+<td><a href="../docs/img/dashboard/desktop-light/06-node-problem.png"><img src="../docs/img/dashboard/desktop-light/06-node-problem.png" width="440"></a><br><sub>One node: issues, health, timeline</sub></td>
+<td><a href="../docs/img/dashboard/desktop-light/15-code-built.png"><img src="../docs/img/dashboard/desktop-light/15-code-built.png" width="440"></a><br><sub>Code &amp; build: editor, PlatformIO build, add to releases</sub></td>
+</tr>
+<tr>
+<td><a href="../docs/img/dashboard/desktop-dark/18-preview-idle.png"><img src="../docs/img/dashboard/desktop-dark/18-preview-idle.png" width="440"></a><br><sub>Kiosk preview (dark theme)</sub></td>
+<td><a href="../docs/img/dashboard/mobile-light/04-nodes.png"><img src="../docs/img/dashboard/mobile-light/04-nodes.png" width="220"></a> <a href="../docs/img/dashboard/mobile-dark/03-overview.png"><img src="../docs/img/dashboard/mobile-dark/03-overview.png" width="220"></a><br><sub>On a phone</sub></td>
+</tr>
+</table>
+
+They are regenerated with [`tools/dashboard-shots/run.sh`](../tools/dashboard-shots/README.md) (a throwaway server with demo data and a real browser), so they can be refreshed after any UI change.
+
 ## Uploading a release
 
 Either build it in the **Code & build** tab (set `FW_VERSION` in `version.h`, **Build firmware**, **Add to releases**), or upload a file in **Releases**:

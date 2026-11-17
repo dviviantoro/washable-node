@@ -9,10 +9,10 @@ stm32-relay/   STM32G030F6P6 relay controller     (PlatformIO, STM32duino)      
 shared/        code used by both firmwares        (relay_proto: CRC, framing, JSON field helpers)
 tests/         host tests that span both projects (run_host_tests.sh, integration/)
 docs/          relay-protocol.md                  the ESP32 <-> STM32 serial JSON protocol
-docs/img/      screenshots (docs/img/screens) and wiring / pinout drawings
+docs/img/      screenshots (screens = kiosk, dashboard = OTA dashboard: every page) and wiring / pinout drawings
 ota-server/    self-hosted OTA backend            (Node + SQLite, serves manifest.json / firmware.bin) -> ota-server/README.md
 ota-dashboard/ admin UI for it                    (Next.js, deployed on Vercel)      -> ota-dashboard/README.md
-tools/         release.py (kiosk release builder), stm32_sim.py (STM32 simulator),
+tools/         release.py (kiosk release builder), stm32_sim.py (STM32 simulator), dashboard-shots/ (regenerates the dashboard screenshots),
                sim/ (renders the kiosk screens on a PC), diagrams/ (generates the SVG drawings)
 .github/       CI (build + tests) and the release workflows
 washable.code-workspace   VS Code multi-root workspace (one PlatformIO project per folder)

@@ -260,7 +260,7 @@ export function StudioPanel(props: { token: string; releases: Release[]; onRelea
                   modified={open.content}
                   keepCurrentOriginalModel
                   keepCurrentModifiedModel
-                  options={{ readOnly: true, renderSideBySide: false, minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+                  options={{ readOnly: true, renderSideBySide: false, renderOverviewRuler: false, enableSplitViewResizing: false, scrollBeyondLastLine: false, minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
                 />
               )}
               {!open && <p className="muted pad">Pick a file.</p>}

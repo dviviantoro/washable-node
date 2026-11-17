@@ -73,11 +73,10 @@ LV_FONT_DECLARE(f_nunito_20)
 #define BL_PIN              27
 #define BL_CH               0
 
-// Demo QRIS payload (decoded from the supplied sample image), drawn as a crisp vector QR
+// Demo QRIS payload, drawn as a crisp vector QR. It is deliberately FAKE (valid QRIS framing and CRC, merchant "WASHABLE DEMO - FAKE QR",
+// all-zero account number): no payment app can pay it. Put the machine owner's real static QRIS here before production use.
 static const char QRIS_PAYLOAD[] =
-  "00020101021126590013ID.CO.BNI.WWW011893600009150418341802096015347460303URE5144"
-  "0014ID.CO.QRIS.WWW0215ID10254102550180303URE5204866153033605802ID5925PEMBANGUNAN "
-  "GEREJA GKPI P6015TAPANULI TENGAH61052261162070703A016304ECBA";
+  "00020101021126440014ID.CO.QRIS.WWW0215ID00000000000000303UMI5204721153033605802ID5923WASHABLE DEMO - FAKE QR6007JAKARTA61051011063047860";
 #define QR_SIZE             183      // 61 modules x 3 px
 
 // ============================== PALETTE ==============================

@@ -32,6 +32,16 @@ export interface JobSpec {
   after?: (dir: string) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
 }
 
+/** The command line as it is shown at the top of a job's log: the log is displayed in the dashboard, so no absolute server paths. */
+function shownCommand(spec: JobSpec): string {
+  const short = (a: string): string => {
+    if (!path.isAbsolute(a)) return a;
+    const rel = path.relative(spec.cwd, a);
+    return rel === "" ? "." : rel.startsWith("..") ? `…/${path.basename(a)}` : rel;
+  };
+  return [path.basename(spec.cmd), ...spec.args.map(short)].join(" ");
+}
+
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
 const KEEP = 12;
 
@@ -86,7 +96,7 @@ export class JobManager {
     const dir = this.jobDir(id);
     mkdirSync(dir, { recursive: true });
     const logFile = path.join(dir, "log.txt");
-    writeFileSync(logFile, `$ ${[spec.cmd, ...spec.args].join(" ")}\n`);
+    writeFileSync(logFile, `$ ${shownCommand(spec)}\n`);
     const info: JobInfo = { id, kind: spec.kind, status: "running", startedAt: new Date().toISOString(), finishedAt: "", exitCode: null, result: null, error: "" };
     this.infos.set(id, info);
     this.save(info);

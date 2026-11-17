@@ -9,6 +9,7 @@ const { buildApp } = await import("../src/app.js");
 const { Store } = await import("../src/db.js");
 const { loadConfig } = await import("../src/config.js");
 import type { FastifyInstance } from "fastify";
+import type { AddressInfo } from "node:net";
 import { fakeImage, multipart } from "./helpers.js";
 
 let app: FastifyInstance;
@@ -20,6 +21,7 @@ before(async () => {
   dir = mkdtempSync(path.join(os.tmpdir(), "ota-test-"));
   const config = loadConfig({ JWT_SECRET: "x".repeat(40), ADMIN_PASSWORD: "correct horse", DATA_DIR: dir, REPO_DIR: path.join(dir, "repo"), ALLOWED_ORIGINS: "https://dash.example.com,https://*.vercel.app" });
   app = await buildApp(config, new Store(":memory:"));
+  await app.listen({ port: 0, host: "127.0.0.1" });
 });
 after(async () => {
   await app.close();
@@ -100,14 +102,21 @@ test("targeting: only the chosen node sees the release; another node and old fir
   assert.equal((await app.inject({ url: "/ota/manifest.json", headers: other })).json().version, "0.0.0");
   assert.equal((await app.inject("/ota/manifest.json")).json().version, "0.0.0");
 
-  const fw = await app.inject({ url: "/ota/firmware.bin", headers: DEV });
-  assert.equal(fw.statusCode, 200);
-  assert.equal(fw.headers["content-length"], String(rel.size));
-  assert.equal(createHash("sha256").update(fw.rawPayload).digest("hex"), rel.sha256);
+  // over a real socket: this is the path a kiosk takes (and the one that logs "download" when the connection closes)
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  const fw = await fetch(`${base}/ota/firmware.bin`, { headers: DEV });
+  assert.equal(fw.status, 200);
+  assert.equal(fw.headers.get("content-length"), String(rel.size));
+  assert.equal(createHash("sha256").update(Buffer.from(await fw.arrayBuffer())).digest("hex"), rel.sha256);
   assert.equal((await app.inject({ url: "/ota/firmware.bin", headers: other })).statusCode, 404);
   assert.equal((await app.inject("/ota/firmware.bin")).statusCode, 404);
 
-  const node = (await app.inject({ url: "/api/nodes/aabbccddeeff", headers: auth() })).json();
+  // the download is logged when the connection closes, which can land a moment after inject() resolves
+  let node = (await app.inject({ url: "/api/nodes/aabbccddeeff", headers: auth() })).json();
+  for (let i = 0; i < 40 && !node.log.some((l: { kind: string }) => l.kind === "download"); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+    node = (await app.inject({ url: "/api/nodes/aabbccddeeff", headers: auth() })).json();
+  }
   assert.equal(node.node.update, "pending");
   assert.ok(node.log.some((l: { kind: string }) => l.kind === "download"));
   assert.ok(node.log.some((l: { kind: string }) => l.kind === "assigned"));

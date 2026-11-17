@@ -42,6 +42,11 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
     } catch { /* ignore */ }
   }, []);
 
+  useEffect(() => {
+    // on a phone the tab strip scrolls sideways: bring the active tab into view (also after a reload)
+    document.querySelector("nav.tabs button.on")?.scrollIntoView({ inline: "center", block: "nearest" });
+  }, [tab, status !== null]);
+
   const refresh = useCallback(async () => {
     try {
       const [s, r, n, e, a] = await Promise.all([
