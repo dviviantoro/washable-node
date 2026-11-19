@@ -1,3 +1,7 @@
+import { DemoHttpError, demoApi, demoDownload, demoUpload, isDemoToken } from "./demo";
+
+export { DEMO_TOKEN, isDemoToken, resetDemo } from "./demo";
+
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 
 export interface Release {
@@ -159,6 +163,13 @@ async function errorFrom(res: Response): Promise<ApiError> {
 }
 
 export async function api<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
+  if (isDemoToken(token)) {
+    try {
+      return (await demoApi(path, init)) as T;
+    } catch (e) {
+      throw e instanceof DemoHttpError ? new ApiError(e.status, e.message) : e;
+    }
+  }
   const headers = new Headers(init.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   let res: Response;
@@ -178,6 +189,7 @@ export function uploadRelease(
   fields: { version: string; min_version: string; notes: string },
   onProgress: (pct: number) => void,
 ): Promise<Release> {
+  if (isDemoToken(token)) return demoUpload(file, fields, onProgress).catch((e) => { throw e instanceof DemoHttpError ? new ApiError(e.status, e.message) : e; });
   return new Promise((resolve, reject) => {
     const form = new FormData();
     // text fields first, file last: the server reads parts in order
@@ -206,9 +218,15 @@ export function uploadRelease(
 
 /** Download an authenticated file (the API needs the bearer token, so a plain link will not do). */
 export async function downloadFile(token: string, path: string, filename: string): Promise<void> {
-  const res = await fetch(API_URL + path, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
-  if (!res.ok) throw await errorFrom(res);
-  const url = URL.createObjectURL(await res.blob());
+  let blob: Blob;
+  if (isDemoToken(token)) {
+    blob = await demoDownload(path);
+  } else {
+    const res = await fetch(API_URL + path, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    if (!res.ok) throw await errorFrom(res);
+    blob = await res.blob();
+  }
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;

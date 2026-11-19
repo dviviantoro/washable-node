@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, api, downloadFile, type DeviceEvent, type NodeInfo, type NodeLog, type Release, type Status } from "@/lib/api";
+import { ApiError, api, downloadFile, isDemoToken, type DeviceEvent, type NodeInfo, type NodeLog, type Release, type Status } from "@/lib/api";
 import { OverviewPanel } from "./OverviewPanel";
 import { NodesPanel } from "./NodesPanel";
 import { UploadPanel } from "./UploadPanel";
@@ -85,6 +85,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   }
 
   const attention = status?.nodes.attention ?? 0;
+  const demo = isDemoToken(token);
 
   return (
     <>
@@ -94,8 +95,13 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
           <strong>Washable OTA</strong>
           {status && <span className="muted small">server v{status.serverVersion}</span>}
         </div>
-        <button className="btn ghost" onClick={onLogout}>Sign out</button>
+        <button className="btn ghost" onClick={onLogout}>{demo ? "Exit demo" : "Sign out"}</button>
       </header>
+      {demo && (
+        <p className="demo-banner" role="note">
+          <strong>Demo mode</strong> — sample data, nothing is sent to a server. Assign updates, edit code, build and open the kiosk preview freely; a reload resets everything.
+        </p>
+      )}
       <nav className="tabs" aria-label="Sections">
         {TABS.map((t) => (
           <button key={t.id} className={tab === t.id ? "on" : ""} aria-current={tab === t.id ? "page" : undefined} onClick={() => setTab(t.id)}>

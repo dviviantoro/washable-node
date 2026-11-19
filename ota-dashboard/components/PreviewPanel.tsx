@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_URL, ApiError, api, type JobInfo, type StudioStatus } from "@/lib/api";
+import { API_URL, ApiError, api, isDemoToken, type JobInfo, type StudioStatus } from "@/lib/api";
 import { fmtAgo, fmtBytes } from "@/lib/format";
 import { JobLog } from "./JobLog";
 
@@ -70,7 +70,9 @@ export function PreviewPanel({ token, onUnauthorized, onStudioChanged }: { token
     setError(null);
     (async () => {
       try {
-        const res = await fetch(API_URL + "/api/preview/sim.js", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+        const res = isDemoToken(token)
+          ? await fetch("/demo/sim.js")   // demo mode: the compiled kiosk that ships with the dashboard
+          : await fetch(API_URL + "/api/preview/sim.js", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         blobUrl = URL.createObjectURL(new Blob([await res.text()], { type: "text/javascript" }));
         const mod = (await import(/* webpackIgnore: true */ blobUrl)) as { default: SimFactory };
@@ -167,6 +169,7 @@ export function PreviewPanel({ token, onUnauthorized, onStudioChanged }: { token
           This is the real kiosk UI code (LVGL, the same <code>main.cpp</code> as the firmware) compiled to WebAssembly from the <b>saved</b> files in the Code tab, running in your browser. Click and drag on the screen like a touch panel.
           Payments and the relay controller are emulated.
         </p>
+        {isDemoToken(token) && <p className="alert warn small">Demo: this is a pre-built copy of the kiosk that ships with the dashboard. Edits in the Code tab do not change it, and “Rebuild” only simulates a build.</p>}
         {other && <p className="alert warn">A {studio!.busy!.kind} build is running; wait for it to finish.</p>}
         {studio && !studio.toolchain.emsdk && <p className="alert error">Emscripten is not installed on the server.</p>}
         {error && <p className="alert error" role="alert">{error}</p>}

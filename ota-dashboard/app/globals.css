@@ -107,6 +107,9 @@ textarea { resize: vertical; }
 .badge.bad { background: var(--bad-bg); color: var(--bad); }
 .badge.inline { margin-left: 8px; }
 
+.demo-cta { border-top: 1px solid var(--border); padding-top: 14px; }
+.demo-cta .btn { width: 100%; }
+.demo-banner { margin: 0; padding: 8px 16px; background: var(--warn-bg); color: var(--warn); font-size: 13px; text-align: center; border-bottom: 1px solid var(--border); }
 .alert { padding: 10px 12px; border-radius: 8px; font-size: 14px; }
 .alert.error { background: var(--bad-bg); color: var(--bad); }
 .alert.warn { background: var(--warn-bg); color: var(--warn); }

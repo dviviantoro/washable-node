@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { API_URL, api } from "@/lib/api";
+import { API_URL, DEMO_TOKEN, api } from "@/lib/api";
 
 export function LoginForm({ onLogin }: { onLogin: (token: string) => void }) {
   const [password, setPassword] = useState("");
@@ -39,6 +39,10 @@ export function LoginForm({ onLogin }: { onLogin: (token: string) => void }) {
         </label>
         {error && <p className="alert error" role="alert">{error}</p>}
         <button className="btn primary" disabled={busy || !password}>{busy ? "Signing in…" : "Sign in"}</button>
+        <div className="demo-cta stack tight">
+          <button type="button" className="btn" onClick={() => onLogin(DEMO_TOKEN)}>Try the demo (sample data)</button>
+          <p className="muted small">Explore every tab with made-up nodes, releases, a code editor and the interactive kiosk. Nothing is sent to a server.</p>
+        </div>
         <p className="muted small">Server: {new URL(API_URL).host}</p>
       </form>
     </main>

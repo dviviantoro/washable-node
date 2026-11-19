@@ -33,6 +33,12 @@ npm install
 NEXT_PUBLIC_API_URL=http://localhost:8787 npm run dev      # http://localhost:3000, allowed by the backend's default ALLOWED_ORIGINS
 ```
 
+## Demo mode
+
+The login page has a **Try the demo (sample data)** button. It opens the dashboard on made-up data with no server at all (so it also works on the public Vercel site): eight nodes with health and timelines, three-release history, assigning updates, the Code tab on the real firmware sources, a simulated build, uploads, and the interactive kiosk preview. Everything lives in memory and resets on reload.
+
+How it works: `lib/demo.ts` answers the same API calls as the real server when the session token is `demo`. The files it serves are in `public/demo/` (the compiled kiosk preview `sim.js` and copies of the firmware sources). After changing the kiosk firmware or rebuilding the preview, refresh them with `node scripts/sync-demo.mjs` and commit the result. Do not run it after putting a real merchant QRIS into `main.cpp`: the compiled preview would carry it.
+
 ## Screenshots
 
 Every page in four setups (desktop and phone, light and dark theme), plus every kiosk page rendered through the Kiosk preview, is in [`docs/img/dashboard`](../docs/img/dashboard/README.md) (all data is made up). A few of them:
